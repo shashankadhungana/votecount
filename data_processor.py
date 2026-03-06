@@ -79,7 +79,6 @@ def process_election_data(raw_data):
             item.get('leading_party') or 
             item.get('party_name') or 
             item.get('party') or 
-            # Check inside the first candidate if leading_party key is missing at root
             (item.get('candidates') and item['candidates'][0].get('party')) or
             'Independent'
         )
@@ -138,7 +137,6 @@ def process_election_data(raw_data):
                 v2 = int(cands[1].get('votes', 0))
                 margin = abs(v1 - v2)
                 
-                # Filter out seats with 0 votes to avoid showing them as "Hot" before counting starts
                 if margin < 1500 and (v1 > 0 or v2 > 0):
                     p_name = cands[0].get('party') or cands[0].get('party_name') or 'IND'
                     hot_seats_list.append({
