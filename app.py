@@ -5,29 +5,33 @@ import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 from mapping import CANDIDATE_REGISTRY, PARTY_BRANDING
 
-st.set_page_config(page_title="Nepal Election 2082 Live", layout="wide", page_icon="🇳🇵")
-st_autorefresh(interval=20000, key="nepal_sync")
+st.set_page_config(page_title="Nepal Votes 2082 Live", layout="wide", page_icon="🇳🇵")
+st_autorefresh(interval=30000, key="nepal_sync")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
 @st.cache_data(ttl=5)
-def get_election_results():
+def get_live_results():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
         rows = []
         for const in data:
-            c_name = const.get('name', 'Unknown')
+            c_name = str(const.get('name', 'Unknown'))
             for c in const.get('candidates', []):
-                name = str(c.get('name', 'Unknown'))
-                # 1. Map Candidate to Party (Priority: Registry -> JSON -> Independent)
-                party = CANDIDATE_REGISTRY.get(name) or c.get('party') or "Independent"
-                brand = PARTY_BRANDING.get(party, PARTY_BRANDING["Independent"])
+                cand_name = str(c.get('name', 'Unknown'))
+                
+                # DATA MAPPING LOGIC
+                # 1. Look up candidate in our registry
+                # 2. Fallback to raw JSON party
+                # 3. Last resort: "Independent"
+                mapped_party = CANDIDATE_REGISTRY.get(cand_name) or c.get('party') or "Independent"
+                brand = PARTY_BRANDING.get(mapped_party, PARTY_BRANDING["Independent"])
                 
                 rows.append({
                     "Constituency": c_name,
-                    "Candidate": name,
-                    "Party": party,
+                    "Candidate": cand_name,
+                    "Party": mapped_party,
                     "Symbol": brand['symbol'],
                     "Color": brand['color'],
                     "Votes": int(c.get('votes', 0))
@@ -36,66 +40,50 @@ def get_election_results():
     except:
         return pd.DataFrame()
 
-df = get_election_results()
+df = get_live_results()
 
-# --- THE UI: NEPAL ELECTION NIGHT ---
-st.title("🇳🇵 Nepal Election 2082 Live: House of Representatives")
-st.markdown(f"**Last Data Sync:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
+# --- THE LIVE INTERFACE ---
+st.title("🇳🇵 Nepal Election 2082 Live Dashboard")
+st.info("Election Date: March 5, 2026 | Counting Status: LIVE")
 
 if not df.empty:
-    # --- 1. THE BIG THREE TRACKER ---
-    st.subheader("🔥 Key Leader Results")
-    top_cands = ["Balendra Shah", "KP Sharma Oli", "Gagan Kumar Thapa"]
-    pm_cols = st.columns(3)
+    # 1. STAR CONTESTS (AUTO-MAPPED)
+    st.subheader("🔥 High-Stakes Battlegrounds")
+    col1, col2, col3 = st.columns(3)
     
-    for i, name in enumerate(top_cands):
-        match = df[df['Candidate'].str.contains(name.split()[0], case=False)]
-        if not match.empty:
-            leader = match.iloc[0]
-            pm_cols[i].metric(
-                f"{leader['Symbol']} {leader['Candidate']}", 
-                f"{leader['Votes']:,} 🗳️", 
-                leader['Constituency']
-            )
+    # Jhapa-5: Balen vs Oli
+    jhapa = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
+    if not jhapa.empty:
+        top = jhapa.iloc[0]
+        col1.metric(f"{top['Symbol']} {top['Candidate']}", f"{top['Votes']:,} 🗳️", f"Leading in Jhapa-5")
 
-    # --- 2. SEAT SHARE (FPTP + PR ESTIMATE) ---
+    # Sarlahi-4: Amresh Singh vs Gagan Thapa
+    sarlahi = df[df['Constituency'] == "Sarlahi-4"].sort_values('Votes', ascending=False)
+    if not sarlahi.empty:
+        top_s = sarlahi.iloc[0]
+        col2.metric(f"{top_s['Symbol']} {top_s['Candidate']}", f"{top_s['Votes']:,} 🗳️", f"Leading in Sarlahi-4")
+
+    # Kathmandu-1: Ranju Neupane
+    ktm1 = df[df['Constituency'] == "Kathmandu-1"].sort_values('Votes', ascending=False)
+    if not ktm1.empty:
+        top_k = ktm1.iloc[0]
+        col3.metric(f"{top_k['Symbol']} {top_k['Candidate']}", f"{top_k['Votes']:,} 🗳️", f"Leading in Kathmandu-1")
+
+    # 2. SEAT SHARE SUMMARY
     st.divider()
-    # FPTP Leads
     winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    fptp_leads = winners['Party'].value_counts().to_dict()
-    
-    # PR Projections (110 seats total)
-    total_v = df['Votes'].sum()
-    party_v = df.groupby('Party')['Votes'].sum()
-    
-    projection_data = []
-    for party in party_v.index:
-        share = party_v[party] / total_v
-        fptp = fptp_leads.get(party, 0)
-        pr = round(share * 110) if share >= 0.03 else 0
-        brand = PARTY_BRANDING.get(party, PARTY_BRANDING["Independent"])
-        
-        projection_data.append({
-            "Party": f"{brand['symbol']} {party}",
-            "Total Seats": fptp + pr,
-            "Color": brand['color']
-        })
-    
-    proj_df = pd.DataFrame(projection_data).sort_values("Total Seats", ascending=False)
+    seats = winners['Party'].value_counts().reset_index()
+    seats.columns = ['Party', 'FPTP Leads']
 
-    st.subheader("Majority Tally (138 to Win)")
-    fig_bar = px.bar(proj_df, x="Total Seats", y="Party", orientation='h', color="Party",
-                     color_discrete_map={p['Party']: p['Color'] for p in projection_data})
-    st.plotly_chart(fig_bar, use_container_width=True)
+    # Apply colors
+    colors = {p: PARTY_BRANDING.get(p, PARTY_BRANDING["Independent"])['color'] for p in seats['Party']}
+    fig = px.bar(seats, x='FPTP Leads', y='Party', color='Party', orientation='h', color_discrete_map=colors)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- 3. CONSTITUENCY SEARCH ---
+    # 3. FULL CANDIDATE DATA SHEET
     st.divider()
-    search = st.text_input("🔍 Find Constituency (e.g. Kathmandu-4, Jhapa-5)")
-    if search:
-        st.dataframe(df[df['Constituency'].str.contains(search, case=False)].sort_values('Votes', ascending=False))
-    else:
-        st.write("### All Candidates Data")
+    with st.expander("🔍 Full Candidate & Party Datasheet"):
         st.dataframe(df.sort_values('Votes', ascending=False), use_container_width=True)
 
 else:
-    st.info("🔄 Refreshing ballots... Balen Shah (RSP) currently leading in 94 seats.")
+    st.warning("🔄 Fetching live stream from Election Commission...")
