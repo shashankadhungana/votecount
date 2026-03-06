@@ -4,93 +4,125 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Nepal Election Fix", layout="wide")
-st_autorefresh(interval=20000, key="refresh")
+# --- DASHBOARD CONFIG ---
+st.set_page_config(page_title="Nepal Election 2082 Live", page_icon="🇳🇵", layout="wide")
+st_autorefresh(interval=30000, key="nepal_refresh")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-# Robust Mapping
-PARTY_LOOKUP = {
-    "Rastriya Swatantra Party": ["rsp", "bell", "bell", "घण्टी", "swatantra"],
-    "Nepali Congress": ["nc", "congress", "tree", "रुख"],
-    "CPN (UML)": ["uml", "sun", "सूर्य", "cpn-uml"],
-    "CPN (Maoist)": ["maoist", "center", "maobadi", "माओवादी"],
-    "RPP": ["rpp", "plough", "halo", "हलो"]
+# --- PARTY MAPPING (Based on March 2026 Data) ---
+PARTY_META = {
+    "Rastriya Swatantra Party": {"abbr": "RSP", "symbol": "🔔", "color": "#00adef", "keywords": ["rsp", "swatantra", "bell", "घण्टी"]},
+    "CPN (UML)": {"abbr": "UML", "symbol": "☀️", "color": "#e21b22", "keywords": ["uml", "cpn-uml", "sun", "सूर्य"]},
+    "Nepali Congress": {"abbr": "NC", "symbol": "🌳", "color": "#ff0000", "keywords": ["nc", "congress", "tree", "रुख"]},
+    "Nepali Communist Party": {"abbr": "NCP", "symbol": "⭐", "color": "#dd0000", "keywords": ["ncp", "maobadi", "maoist"]},
+    "Rastriya Prajatantra Party": {"abbr": "RPP", "symbol": "🚜", "color": "#ffcc00", "keywords": ["rpp", "plough", "halo"]},
+    "Shram Sanskriti Party": {"abbr": "SSP", "symbol": "⚒️", "color": "#4B0082", "keywords": ["shram", "sanskriti"]}
 }
 
-def clean_party(raw_val):
-    if not raw_val: return "Independent"
-    val = str(raw_val).lower()
-    for official, aliases in PARTY_LOOKUP.items():
-        if any(alias in val for alias in aliases):
+def identify_party(raw_name):
+    name = str(raw_name).lower()
+    for official, meta in PARTY_META.items():
+        if any(k in name for k in meta['keywords']):
             return official
     return "Independent"
 
-@st.cache_data(ttl=5)
-def fetch_and_debug():
+@st.cache_data(ttl=10)
+def load_live_data():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
-        
         rows = []
-        # We handle both list of dicts and nested dicts
         for entry in data:
-            # 1. Get Constituency Name
-            c_name = entry.get('name') or entry.get('constituency') or "Unknown"
-            
-            # 2. Find the candidates list (it might be called 'candidates' or something else)
-            candidates = []
-            for key in ['candidates', 'data', 'results', 'list']:
-                if key in entry and isinstance(entry[key], list):
-                    candidates = entry[key]
-                    break
-            
-            # 3. Process each candidate
-            for cand in candidates:
-                # DYNAMICALLY FIND THE PARTY FIELD
-                # We check every key in the candidate object for 'party' or 'group'
-                raw_party = "Independent"
-                for k, v in cand.items():
-                    if 'party' in k.lower() or 'group' in k.lower() or 'symbol' in k.lower():
-                        raw_party = v
-                        break
-                
+            c_name = entry.get('name', 'Unknown')
+            for cand in entry.get('candidates', []):
+                p_name = identify_party(cand.get('party', ''))
                 rows.append({
                     "Constituency": c_name,
-                    "Candidate": cand.get('name') or cand.get('candidate_name') or "Unknown",
-                    "Raw_Party": raw_party,
-                    "Party": clean_party(raw_party),
-                    "Votes": int(cand.get('votes') or cand.get('count') or 0)
+                    "Candidate": cand.get('name', 'Unknown'),
+                    "Party": p_name,
+                    "Votes": int(cand.get('votes', 0))
                 })
-        return pd.DataFrame(rows), data
-    except Exception as e:
-        st.error(f"Error: {e}")
-        return pd.DataFrame(), None
+        return pd.DataFrame(rows)
+    except:
+        return pd.DataFrame()
 
-df, raw_json = fetch_and_debug()
+df = load_live_data()
 
-st.title("🇳🇵 Nepal Election 2026: Live Tally")
+# --- HEADER ---
+st.title("🇳🇵 Nepal Election 2082: Live Vote Count")
+st.info("Tracking 165 FPTP Constituencies + 110 PR Seat Projections")
 
 if not df.empty:
-    # Seat Count
-    winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    seat_tally = winners['Party'].value_counts().reset_index()
-    seat_tally.columns = ['Party', 'Seats']
+    # 1. PM RACE TRACKER (Jhapa-5 Focus)
+    st.subheader("🔥 Key PM Contenders")
+    pm_cols = st.columns(3)
+    
+    # Specific logic for Jhapa-5
+    jhapa5 = df[df['Constituency'] == "Jhapa-5"]
+    
+    # Balen Shah
+    with pm_cols[0]:
+        balen = jhapa5[jhapa5['Candidate'].str.contains("Balen", case=False)]
+        votes = balen['Votes'].sum() if not balen.empty else 0
+        st.metric("Balendra Shah 🔔", f"{votes:,} votes", "Leading" if votes > 0 else "")
 
-    st.header("FPTP Seat Tally")
-    st.bar_chart(data=seat_tally, x='Party', y='Seats')
-    st.table(seat_tally)
+    # KP Oli
+    with pm_cols[1]:
+        oli = jhapa5[jhapa5['Candidate'].str.contains("Oli", case=False)]
+        votes = oli['Votes'].sum() if not oli.empty else 0
+        st.metric("KP Sharma Oli ☀️", f"{votes:,} votes", delta=None)
 
-    st.header("All Candidate Results")
-    st.dataframe(df, use_container_width=True)
+    # Gagan Thapa
+    with pm_cols[2]:
+        gagan = df[df['Candidate'].str.contains("Gagan", case=False)]
+        votes = gagan['Votes'].sum() if not gagan.empty else 0
+        st.metric("Gagan Thapa 🌳", f"{votes:,} votes")
+
+    # 2. SEAT PROJECTIONS (The Race to 138)
+    st.divider()
+    st.subheader("📊 Path to Majority (FPTP + PR)")
+    
+    # FPTP Leads
+    fptp_winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+    fptp_counts = fptp_winners['Party'].value_counts()
+    
+    # PR Projections (Based on national vote share)
+    total_national_votes = df['Votes'].sum()
+    party_vote_share = df.groupby('Party')['Votes'].sum()
+    
+    final_projections = []
+    for party in party_vote_share.index:
+        share = party_vote_share[party] / total_national_votes
+        fptp = fptp_counts.get(party, 0)
+        pr = round(share * 110) if share >= 0.03 else 0 # 3% Threshold
+        
+        meta = PARTY_META.get(party, {"symbol": "👤", "color": "#808080"})
+        final_projections.append({
+            "Party": f"{meta['symbol']} {party}",
+            "FPTP Leads": fptp,
+            "PR Projected": pr,
+            "Total Seats": fptp + pr,
+            "Color": meta['color']
+        })
+
+    proj_df = pd.DataFrame(final_projections).sort_values("Total Seats", ascending=False)
+    
+    # Progress Bars for top 3
+    for _, row in proj_df.head(3).iterrows():
+        st.write(f"**{row['Party']}** ({row['Total Seats']} / 138)")
+        st.progress(min(row['Total Seats'] / 138, 1.0))
+
+    # 3. DETAILED DATA
+    st.divider()
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        fig = px.bar(proj_df, x="Total Seats", y="Party", color="Party", orientation='h',
+                     color_discrete_map={r['Party']: r['Color'] for r in final_projections})
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.write("### Live Leaderboard")
+        st.dataframe(proj_df[["Party", "FPTP Leads", "PR Projected", "Total Seats"]], hide_index=True)
+
 else:
-    st.warning("No data found. Please check the 'Raw JSON Debug' below.")
-
-# --- THE FIXER: DEBUG SECTION ---
-st.divider()
-with st.expander("🛠️ DEBUG: Inspect JSON Structure (Open this if it still shows Independent)"):
-    if raw_json:
-        st.write("The script sees these keys in your first entry:")
-        st.write(list(raw_json[0].keys()) if len(raw_json) > 0 else "Empty List")
-        st.write("Full JSON Preview:")
-        st.json(raw_json[0] if len(raw_json) > 0 else {})
+    st.warning("🔄 Fetching live data from Election Commission...")
