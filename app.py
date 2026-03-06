@@ -4,125 +4,91 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- DASHBOARD CONFIG ---
-st.set_page_config(page_title="Nepal Election 2082 Live", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_refresh")
+st.set_page_config(page_title="Nepal Election 2082 Live", layout="wide")
+st_autorefresh(interval=30000, key="nepal_fix")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-# --- PARTY MAPPING (Based on March 2026 Data) ---
-PARTY_META = {
-    "Rastriya Swatantra Party": {"abbr": "RSP", "symbol": "🔔", "color": "#00adef", "keywords": ["rsp", "swatantra", "bell", "घण्टी"]},
-    "CPN (UML)": {"abbr": "UML", "symbol": "☀️", "color": "#e21b22", "keywords": ["uml", "cpn-uml", "sun", "सूर्य"]},
-    "Nepali Congress": {"abbr": "NC", "symbol": "🌳", "color": "#ff0000", "keywords": ["nc", "congress", "tree", "रुख"]},
-    "Nepali Communist Party": {"abbr": "NCP", "symbol": "⭐", "color": "#dd0000", "keywords": ["ncp", "maobadi", "maoist"]},
-    "Rastriya Prajatantra Party": {"abbr": "RPP", "symbol": "🚜", "color": "#ffcc00", "keywords": ["rpp", "plough", "halo"]},
-    "Shram Sanskriti Party": {"abbr": "SSP", "symbol": "⚒️", "color": "#4B0082", "keywords": ["shram", "sanskriti"]}
+# This dictionary helps the script "find" the party even if the JSON is messy
+LOOKUP = {
+    "Rastriya Swatantra Party": ["rsp", "bell", "ghanti", "balen", "swatantra"],
+    "CPN (UML)": ["uml", "sun", "surya", "oli"],
+    "Nepali Congress": ["nc", "congress", "tree", "rukh", "gagan"],
+    "Nepali Communist Party": ["ncp", "maoist", "maobadi", "prachanda"],
+    "RPP": ["rpp", "plough", "halo", "lingden"]
 }
 
-def identify_party(raw_name):
-    name = str(raw_name).lower()
-    for official, meta in PARTY_META.items():
-        if any(k in name for k in meta['keywords']):
-            return official
+def auto_detect_party(val):
+    """Scans the text for keywords to identify the party correctly."""
+    text = str(val).lower()
+    for party, keywords in LOOKUP.items():
+        if any(k in text for k in keywords):
+            return party
     return "Independent"
 
-@st.cache_data(ttl=10)
-def load_live_data():
+@st.cache_data(ttl=5)
+def load_and_fix():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
         rows = []
-        for entry in data:
-            c_name = entry.get('name', 'Unknown')
-            for cand in entry.get('candidates', []):
-                p_name = identify_party(cand.get('party', ''))
+        for const in data:
+            c_name = const.get('name', 'Unknown')
+            # The candidates list might be called 'candidates' or 'data'
+            cands = const.get('candidates', [])
+            for c in cands:
+                # We try to find 'party' or 'party_name' or 'group'
+                raw_party = next((v for k, v in c.items() if 'party' in k.lower()), "Independent")
+                
                 rows.append({
                     "Constituency": c_name,
-                    "Candidate": cand.get('name', 'Unknown'),
-                    "Party": p_name,
-                    "Votes": int(cand.get('votes', 0))
+                    "Candidate": next((v for k, v in c.items() if 'name' in k.lower()), "Unknown"),
+                    "Party": auto_detect_party(raw_party),
+                    "Votes": int(next((v for k, v in c.items() if 'vote' in k.lower()), 0))
                 })
         return pd.DataFrame(rows)
-    except:
+    except Exception as e:
+        st.error(f"Sync Error: {e}")
         return pd.DataFrame()
 
-df = load_live_data()
+df = load_and_fix()
 
-# --- HEADER ---
-st.title("🇳🇵 Nepal Election 2082: Live Vote Count")
-st.info("Tracking 165 FPTP Constituencies + 110 PR Seat Projections")
+# --- THE DASHBOARD ---
+st.title("🇳🇵 Nepal General Election 2082 Live")
 
 if not df.empty:
-    # 1. PM RACE TRACKER (Jhapa-5 Focus)
-    st.subheader("🔥 Key PM Contenders")
-    pm_cols = st.columns(3)
-    
-    # Specific logic for Jhapa-5
-    jhapa5 = df[df['Constituency'] == "Jhapa-5"]
-    
-    # Balen Shah
-    with pm_cols[0]:
-        balen = jhapa5[jhapa5['Candidate'].str.contains("Balen", case=False)]
-        votes = balen['Votes'].sum() if not balen.empty else 0
-        st.metric("Balendra Shah 🔔", f"{votes:,} votes", "Leading" if votes > 0 else "")
+    # 1. LIVE PM BATTLE (Jhapa-5)
+    st.subheader("🔥 The Battle for Jhapa-5")
+    j5 = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
+    if not j5.empty:
+        p1, p2 = st.columns(2)
+        top = j5.iloc[0]
+        p1.metric(f"Leader: {top['Candidate']}", f"{top['Votes']:,} 🗳️", f"{top['Party']}")
+        if len(j5) > 1:
+            sec = j5.iloc[1]
+            p2.metric(f"Runner-up: {sec['Candidate']}", f"{sec['Votes']:,}", f"Margin: {top['Votes']-sec['Votes']:,}", delta_color="inverse")
 
-    # KP Oli
-    with pm_cols[1]:
-        oli = jhapa5[jhapa5['Candidate'].str.contains("Oli", case=False)]
-        votes = oli['Votes'].sum() if not oli.empty else 0
-        st.metric("KP Sharma Oli ☀️", f"{votes:,} votes", delta=None)
-
-    # Gagan Thapa
-    with pm_cols[2]:
-        gagan = df[df['Candidate'].str.contains("Gagan", case=False)]
-        votes = gagan['Votes'].sum() if not gagan.empty else 0
-        st.metric("Gagan Thapa 🌳", f"{votes:,} votes")
-
-    # 2. SEAT PROJECTIONS (The Race to 138)
+    # 2. NATIONAL SEAT TALLY
     st.divider()
-    st.subheader("📊 Path to Majority (FPTP + PR)")
-    
-    # FPTP Leads
-    fptp_winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    fptp_counts = fptp_winners['Party'].value_counts()
-    
-    # PR Projections (Based on national vote share)
-    total_national_votes = df['Votes'].sum()
-    party_vote_share = df.groupby('Party')['Votes'].sum()
-    
-    final_projections = []
-    for party in party_vote_share.index:
-        share = party_vote_share[party] / total_national_votes
-        fptp = fptp_counts.get(party, 0)
-        pr = round(share * 110) if share >= 0.03 else 0 # 3% Threshold
-        
-        meta = PARTY_META.get(party, {"symbol": "👤", "color": "#808080"})
-        final_projections.append({
-            "Party": f"{meta['symbol']} {party}",
-            "FPTP Leads": fptp,
-            "PR Projected": pr,
-            "Total Seats": fptp + pr,
-            "Color": meta['color']
-        })
+    # Winner in each of the 165 seats
+    winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+    tally = winners['Party'].value_counts().reset_index()
+    tally.columns = ['Party', 'FPTP Seats']
 
-    proj_df = pd.DataFrame(final_projections).sort_values("Total Seats", ascending=False)
-    
-    # Progress Bars for top 3
-    for _, row in proj_df.head(3).iterrows():
-        st.write(f"**{row['Party']}** ({row['Total Seats']} / 138)")
-        st.progress(min(row['Total Seats'] / 138, 1.0))
-
-    # 3. DETAILED DATA
-    st.divider()
     c1, c2 = st.columns([2, 1])
     with c1:
-        fig = px.bar(proj_df, x="Total Seats", y="Party", color="Party", orientation='h',
-                     color_discrete_map={r['Party']: r['Color'] for r in final_projections})
+        st.subheader("National Seat Share")
+        fig = px.bar(tally, x='FPTP Seats', y='Party', orientation='h', color='Party',
+                     color_discrete_map={"Rastriya Swatantra Party": "#00adef", "CPN (UML)": "#e21b22", "Nepali Congress": "#ff0000"})
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.write("### Live Leaderboard")
-        st.dataframe(proj_df[["Party", "FPTP Leads", "PR Projected", "Total Seats"]], hide_index=True)
+        st.write("### Tally Table")
+        st.table(tally)
 
+    # 3. SEARCH
+    st.divider()
+    query = st.text_input("🔍 Search for a Candidate or Constituency")
+    if query:
+        st.dataframe(df[df.apply(lambda x: query.lower() in str(x).lower(), axis=1)])
 else:
-    st.warning("🔄 Fetching live data from Election Commission...")
+    st.warning("Connecting to Election Commission stream...")
