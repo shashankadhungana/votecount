@@ -4,51 +4,33 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- CONFIG ---
-st.set_page_config(page_title="Nepal 2082 Election Live", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_live")
+# --- SETUP ---
+st.set_page_config(page_title="Nepal Election 2082 Live", page_icon="🇳🇵", layout="wide")
+st_autorefresh(interval=30000, key="nepal_live_sync")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-# --- UPDATED MARCH 2026 PARTY RULES ---
-# These keywords are designed to catch exactly what the EC reports
-PARTY_RULES = {
-    "Rastriya Swatantra Party": {
-        "keys": ["rsp", "rastriya swatantra", "swatantra party", "bell", "ghanti", "balen", "घण्टी"], 
-        "color": "#00adef", "symbol": "🔔"
-    },
-    "Nepali Congress": {
-        "keys": ["nc", "nepali congress", "congress", "tree", "rukh", "gagan", "रुख"], 
-        "color": "#ff0000", "symbol": "🌳"
-    },
-    "CPN (UML)": {
-        "keys": ["uml", "surya", "sun", "oli", "सूर्य", "unified marxist"], 
-        "color": "#e21b22", "symbol": "☀️"
-    },
-    "Nepali Communist Party": {
-        "keys": ["ncp", "maoist", "maobadi", "माओवादी", "prachanda", "centre"], 
-        "color": "#dd0000", "symbol": "⭐"
-    },
-    "Shram Sanskriti Party": {
-        "keys": ["shram", "sanskriti", "harka", "sampang", "dharan", "sp"], 
-        "color": "#4B0082", "symbol": "⚒️"
-    },
-    "Rastriya Prajatantra Party": {
-        "keys": ["rpp", "halo", "plough", "lingden", "हलो", "prajatantra"], 
-        "color": "#ffcc00", "symbol": "🚜"
-    }
+# --- OFFICIAL PARTY REGISTRY ---
+# We use the exact abbreviations expected in the 2026 cycle
+OFFICIAL_PARTIES = {
+    "RSP": {"name": "Rastriya Swatantra Party", "color": "#00adef", "symbol": "🔔"},
+    "NC": {"name": "Nepali Congress", "color": "#ff0000", "symbol": "🌳"},
+    "UML": {"name": "CPN (UML)", "color": "#e21b22", "symbol": "☀️"},
+    "NCP": {"name": "Nepali Communist Party", "color": "#dd0000", "symbol": "⭐"},
+    "RPP": {"name": "Rastriya Prajatantra Party", "color": "#ffcc00", "symbol": "🚜"},
+    "SSP": {"name": "Shram Sanskriti Party", "color": "#4B0082", "symbol": "⚒️"}
 }
 
-def map_party(val):
-    if not val: return "Independent", "👤", "#808080"
-    text = str(val).lower().strip()
-    for party, meta in PARTY_RULES.items():
-        if any(k in text for k in meta['keys']):
-            return party, meta['symbol'], meta['color']
-    return "Independent", "👤", "#808080"
+def get_party_details(raw_party_code):
+    """Zero-logic mapping: Returns official info or the raw string itself."""
+    code = str(raw_party_code).strip().upper()
+    if code in OFFICIAL_PARTIES:
+        return OFFICIAL_PARTIES[code]
+    # If not in our list, return the raw data with a default color
+    return {"name": code, "color": "#555555", "symbol": "🗳️"}
 
 @st.cache_data(ttl=5)
-def get_clean_data():
+def load_data():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
@@ -56,65 +38,75 @@ def get_clean_data():
         for const in data:
             c_name = const.get('name', 'Unknown')
             for cand in const.get('candidates', []):
-                p_raw = cand.get('party', '') or cand.get('party_name', '')
-                p_name, p_sym, p_color = map_party(p_raw)
+                p_code = cand.get('party', 'UNKNOWN')
+                details = get_party_details(p_code)
                 
                 rows.append({
                     "Constituency": c_name,
                     "Candidate": cand.get('name', 'N/A'),
-                    "Party": p_name,
-                    "Symbol": p_sym,
-                    "Color": p_color,
+                    "Party": details['name'],
+                    "Symbol": details['symbol'],
+                    "Color": details['color'],
                     "Votes": int(cand.get('votes', 0))
                 })
         return pd.DataFrame(rows)
-    except:
+    except Exception as e:
+        st.error(f"Data Fetch Error: {e}")
         return pd.DataFrame()
 
-df = get_clean_data()
+df = load_data()
 
-# --- THE LIVE DASHBOARD ---
+# --- THE UI ---
 st.title("🇳🇵 Nepal House of Representatives Election 2082")
-st.markdown(f"**Last Refreshed:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
+st.markdown("### First-Past-The-Post (FPTP) Live Tracker")
 
 if not df.empty:
-    # 1. THE BIG BATTLE: JHAPA-5
+    # 1. TOP HIGHLIGHT: JHAPA-5 (Balen vs Oli)
     st.divider()
-    st.subheader("🔥 Jhapa-5: Balen Shah vs KP Oli")
     jhapa = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
-    
     if not jhapa.empty:
-        c1, c2, c3 = st.columns(3)
-        top = jhapa.iloc[0]
-        c1.metric("Leading", f"{top['Candidate']} {top['Symbol']}", f"{top['Votes']:,} 🗳️")
-        if len(jhapa) > 1:
-            runner = jhapa.iloc[1]
-            c2.metric("Runner-up", f"{runner['Candidate']} {runner['Symbol']}", f"{runner['Votes']:,}")
-            c3.metric("Lead Margin", f"{top['Votes'] - runner['Votes']:,}", delta_color="normal")
+        st.subheader("🔥 Key Battle: Jhapa-5")
+        cols = st.columns(len(jhapa.head(3)))
+        for i, (_, row) in enumerate(jhapa.head(3).iterrows()):
+            cols[i].metric(
+                label=f"{row['Symbol']} {row['Candidate']}",
+                value=f"{row['Votes']:,} 🗳️",
+                delta=row['Party']
+            )
 
-    # 2. SEAT SHARE SUMMARY
+    # 2. NATIONAL SEAT COUNT
     st.divider()
-    # Winner in each of the 165 seats
-    fptp_winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    seats = fptp_winners['Party'].value_counts().reset_index()
-    seats.columns = ['Party', 'FPTP Leads']
+    # Logic: Get the leader of every single constituency
+    winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+    seat_tally = winners.groupby('Party').size().reset_index(name='Seats').sort_values('Seats', ascending=False)
 
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        st.subheader("Current FPTP Seat Leads")
-        # Map colors for the chart
-        chart_colors = [map_party(p)[2] for p in seats['Party']]
-        fig = px.bar(seats, x='FPTP Leads', y='Party', color='Party', orientation='h',
-                     color_discrete_sequence=chart_colors)
+    col_main, col_side = st.columns([2, 1])
+    with col_main:
+        st.subheader("Current Leading Seats (National)")
+        fig = px.bar(
+            seat_tally, x='Seats', y='Party', orientation='h', 
+            color='Party', color_discrete_map={row['Party']: get_party_details(row['Party'])['color'] for _, row in seat_tally.iterrows()}
+        )
         st.plotly_chart(fig, use_container_width=True)
     
-    with col_b:
-        st.write("### Tally")
-        st.table(seats)
+    with col_side:
+        st.write("### Tally Table")
+        st.dataframe(seat_tally, hide_index=True, use_container_width=True)
 
-    # 3. ALL CANDIDATES
-    with st.expander("🔍 View All Candidate Results"):
-        st.dataframe(df.sort_values('Votes', ascending=False), use_container_width=True)
+    # 3. LIVE SEARCH
+    st.divider()
+    with st.expander("🔍 Search All 165 Constituencies"):
+        search = st.text_input("Enter Constituency or Candidate Name")
+        if search:
+            st.write(df[df.apply(lambda x: search.lower() in str(x).lower(), axis=1)])
+        else:
+            st.write(df.sort_values('Votes', ascending=False))
 
 else:
-    st.warning("🔄 Fetching data from the Election Commission source...")
+    st.info("🔄 Connecting to live data stream...")
+
+# --- FOOTER ---
+st.sidebar.markdown(f"**Last Update:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
+if st.sidebar.button("Force Clear Cache"):
+    st.cache_data.clear()
+    st.rerun()
