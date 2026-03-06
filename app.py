@@ -5,24 +5,43 @@ import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
 # --- CONFIG ---
-st.set_page_config(page_title="Nepal 2026 Live", page_icon="🇳🇵", layout="wide")
+st.set_page_config(page_title="Nepal 2082 Election Live", page_icon="🇳🇵", layout="wide")
 st_autorefresh(interval=30000, key="nepal_live")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-# --- SMART PARTY DETECTOR ---
-# This looks for any piece of the name/symbol in the data
+# --- UPDATED MARCH 2026 PARTY RULES ---
+# These keywords are designed to catch exactly what the EC reports
 PARTY_RULES = {
-    "Rastriya Swatantra Party": {"keys": ["rsp", "bell", "ghanti", "balen", "घण्टी"], "color": "#00adef", "symbol": "🔔"},
-    "CPN (UML)": {"keys": ["uml", "surya", "sun", "oli", "सूर्य"], "color": "#e21b22", "symbol": "☀️"},
-    "Nepali Congress": {"keys": ["nc", "congress", "tree", "rukh", "gagan", "रुख"], "color": "#ff0000", "symbol": "🌳"},
-    "Nepali Communist Party": {"keys": ["ncp", "maoist", "maobadi", "माओवादी"], "color": "#dd0000", "symbol": "⭐"},
-    "RPP": {"keys": ["rpp", "halo", "plough", "lingden", "हलो"], "color": "#ffcc00", "symbol": "🚜"},
-    "Shram Sanskriti Party": {"keys": ["shram", "sanskriti", "sampaang", "harka"], "color": "#4B0082", "symbol": "⚒️"}
+    "Rastriya Swatantra Party": {
+        "keys": ["rsp", "rastriya swatantra", "swatantra party", "bell", "ghanti", "balen", "घण्टी"], 
+        "color": "#00adef", "symbol": "🔔"
+    },
+    "Nepali Congress": {
+        "keys": ["nc", "nepali congress", "congress", "tree", "rukh", "gagan", "रुख"], 
+        "color": "#ff0000", "symbol": "🌳"
+    },
+    "CPN (UML)": {
+        "keys": ["uml", "surya", "sun", "oli", "सूर्य", "unified marxist"], 
+        "color": "#e21b22", "symbol": "☀️"
+    },
+    "Nepali Communist Party": {
+        "keys": ["ncp", "maoist", "maobadi", "माओवादी", "prachanda", "centre"], 
+        "color": "#dd0000", "symbol": "⭐"
+    },
+    "Shram Sanskriti Party": {
+        "keys": ["shram", "sanskriti", "harka", "sampang", "dharan", "sp"], 
+        "color": "#4B0082", "symbol": "⚒️"
+    },
+    "Rastriya Prajatantra Party": {
+        "keys": ["rpp", "halo", "plough", "lingden", "हलो", "prajatantra"], 
+        "color": "#ffcc00", "symbol": "🚜"
+    }
 }
 
 def map_party(val):
-    text = str(val).lower()
+    if not val: return "Independent", "👤", "#808080"
+    text = str(val).lower().strip()
     for party, meta in PARTY_RULES.items():
         if any(k in text for k in meta['keys']):
             return party, meta['symbol'], meta['color']
@@ -37,7 +56,6 @@ def get_clean_data():
         for const in data:
             c_name = const.get('name', 'Unknown')
             for cand in const.get('candidates', []):
-                # We search all candidate fields for the party name
                 p_raw = cand.get('party', '') or cand.get('party_name', '')
                 p_name, p_sym, p_color = map_party(p_raw)
                 
@@ -55,59 +73,48 @@ def get_clean_data():
 
 df = get_clean_data()
 
-# --- DISPLAY ---
-st.title("🇳🇵 Nepal General Election 2082 Live")
-st.write(f"**Live Count:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
+# --- THE LIVE DASHBOARD ---
+st.title("🇳🇵 Nepal House of Representatives Election 2082")
+st.markdown(f"**Last Refreshed:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
 
 if not df.empty:
-    # 1. THE PM BATTLE: BALEN VS OLI (Jhapa-5)
+    # 1. THE BIG BATTLE: JHAPA-5
     st.divider()
-    st.subheader("🔥 High-Stakes Battle: Jhapa-5")
-    j5 = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
+    st.subheader("🔥 Jhapa-5: Balen Shah vs KP Oli")
+    jhapa = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
     
-    if not j5.empty:
-        c1, c2 = st.columns(2)
-        top = j5.iloc[0]
-        c1.metric(f"Leader: {top['Candidate']} {top['Symbol']}", f"{top['Votes']:,} 🗳️", f"{top['Party']}")
-        if len(j5) > 1:
-            runner = j5.iloc[1]
-            c2.metric(f"Runner-up: {runner['Candidate']} {runner['Symbol']}", f"{runner['Votes']:,}", f"Gap: {top['Votes']-runner['Votes']:,}")
+    if not jhapa.empty:
+        c1, c2, c3 = st.columns(3)
+        top = jhapa.iloc[0]
+        c1.metric("Leading", f"{top['Candidate']} {top['Symbol']}", f"{top['Votes']:,} 🗳️")
+        if len(jhapa) > 1:
+            runner = jhapa.iloc[1]
+            c2.metric("Runner-up", f"{runner['Candidate']} {runner['Symbol']}", f"{runner['Votes']:,}")
+            c3.metric("Lead Margin", f"{top['Votes'] - runner['Votes']:,}", delta_color="normal")
 
-    # 2. NATIONAL SEAT PROJECTION (Race to 138)
+    # 2. SEAT SHARE SUMMARY
     st.divider()
-    st.subheader("📊 Seat Projections (FPTP + PR)")
-    
-    # Winners in 165 FPTP seats
-    winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    fptp_leads = winners['Party'].value_counts()
+    # Winner in each of the 165 seats
+    fptp_winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+    seats = fptp_winners['Party'].value_counts().reset_index()
+    seats.columns = ['Party', 'FPTP Leads']
 
-    # PR Projections (Based on 110 seats)
-    total_votes = df['Votes'].sum()
-    party_votes = df.groupby('Party')['Votes'].sum()
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        st.subheader("Current FPTP Seat Leads")
+        # Map colors for the chart
+        chart_colors = [map_party(p)[2] for p in seats['Party']]
+        fig = px.bar(seats, x='FPTP Leads', y='Party', color='Party', orientation='h',
+                     color_discrete_sequence=chart_colors)
+        st.plotly_chart(fig, use_container_width=True)
     
-    projection_data = []
-    for party in party_votes.index:
-        share = party_votes[party] / total_votes if total_votes > 0 else 0
-        fptp = fptp_leads.get(party, 0)
-        pr = round(share * 110) if share >= 0.03 else 0 # 3% Threshold
-        
-        _, sym, color = map_party(party)
-        projection_data.append({
-            "Party": f"{sym} {party}",
-            "Total": fptp + pr,
-            "Color": color
-        })
+    with col_b:
+        st.write("### Tally")
+        st.table(seats)
 
-    proj_df = pd.DataFrame(projection_data).sort_values("Total", ascending=False)
-    
-    # Progress towards 138 majority
-    for _, row in proj_df.head(3).iterrows():
-        st.write(f"**{row['Party']}** ({row['Total']} / 138)")
-        st.progress(min(row['Total'] / 138, 1.0))
-
-    # 3. LEADERBOARD TABLE
-    st.divider()
-    st.dataframe(df.sort_values('Votes', ascending=False), use_container_width=True)
+    # 3. ALL CANDIDATES
+    with st.expander("🔍 View All Candidate Results"):
+        st.dataframe(df.sort_values('Votes', ascending=False), use_container_width=True)
 
 else:
-    st.error("Waiting for data sync with R2.dev bucket...")
+    st.warning("🔄 Fetching data from the Election Commission source...")
