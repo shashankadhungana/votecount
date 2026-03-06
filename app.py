@@ -4,100 +4,116 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- CONFIG ---
-st.set_page_config(page_title="Election Live 2026", page_icon="🗳️", layout="wide")
-st_autorefresh(interval=30000, key="datarefresh")
+# --- NEPAL PARTY CONFIGURATION ---
+PARTY_META = {
+    "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#00adef", "alias": "RSP"},
+    "Nepali Congress": {"symbol": "🌳", "color": "#ff0000", "alias": "NC"},
+    "CPN (UML)": {"symbol": "☀️", "color": "#e21b22", "alias": "UML"},
+    "Nepal Communist Party": {"symbol": "⭐", "color": "#dd0000", "alias": "NCP"},
+    "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffcc00", "alias": "RPP"},
+    "Ujyalo Nepal Party": {"symbol": "💡", "color": "#f9d71c", "alias": "UNP"},
+    "Janamat Party": {"symbol": "📢", "color": "#00ff00", "alias": "Janamat"},
+    "Independent": {"symbol": "👤", "color": "#808080", "alias": "IND"}
+}
+
+def get_party_info(party_name):
+    # Matches name or tries to find a partial match
+    for p, meta in PARTY_META.items():
+        if p.lower() in str(party_name).lower():
+            return meta
+    return {"symbol": "🗳️", "color": "#333333", "alias": "Other"}
+
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Nepal Election 2026 Live", page_icon="🇳🇵", layout="wide")
+st_autorefresh(interval=30000, key="nepal_refresh")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-def flatten_json(data):
-    """
-    Deep-flattens nested election JSON (Constituencies -> Candidates).
-    """
+def flatten_nepal_data(data):
     rows = []
-    if isinstance(data, list):
-        for item in data:
-            # Check if this item has a sub-list (like 'candidates')
-            base_info = {k: v for k, v in item.items() if not isinstance(v, (list, dict))}
-            
-            # Look for the nested list
-            nested_list_key = next((k for k, v in item.items() if isinstance(v, list)), None)
-            
-            if nested_list_key:
-                for sub_item in item[nested_list_key]:
-                    new_row = base_info.copy()
-                    new_row.update(sub_item)
-                    rows.append(new_row)
-            else:
-                rows.append(base_info)
+    # Assumes structure: [ { name: "Jhapa-5", candidates: [...] }, ... ]
+    for const in data:
+        c_name = const.get('name', 'Unknown')
+        for cand in const.get('candidates', []):
+            p_name = cand.get('party', 'Independent')
+            meta = get_party_info(p_name)
+            rows.append({
+                "Constituency": c_name,
+                "Candidate": cand.get('name', 'N/A'),
+                "Party": p_name,
+                "Symbol": meta['symbol'],
+                "Votes": int(cand.get('votes', 0)),
+                "Color": meta['color']
+            })
     return pd.DataFrame(rows)
 
 @st.cache_data(ttl=10)
-def load_and_clean_data():
+def load_data():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
-        r.raise_for_status()
-        raw_json = r.json()
-        
-        df = flatten_json(raw_json)
-        
-        # Standardize column names to lowercase for logic
-        df.columns = [str(c).lower() for c in df.columns]
-        
-        # Identify columns dynamically
-        v_col = next((c for c in df.columns if 'vote' in c or 'count' in c), None)
-        n_col = next((c for c in df.columns if 'candidate' in c or 'name' in c), None)
-        
-        if v_col:
-            df[v_col] = pd.to_numeric(df[v_col], errors='coerce').fillna(0)
-            
-        return df, v_col, n_col
-    except Exception as e:
-        st.error(f"Data Error: {e}")
-        return pd.DataFrame(), None, None
+        return flatten_nepal_data(r.json())
+    except:
+        return pd.DataFrame()
 
-df, vote_col, name_col = load_and_clean_data()
+df = load_data()
 
-# --- DASHBOARD UI ---
-st.title("🗳️ Election 2026 Live Tracker")
+# --- HEADER ---
+st.markdown("<h1 style='text-align: center;'>🇳🇵 Nepal Election 2026 Live Results</h1>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center;'>Last Update: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>", unsafe_allow_html=True)
 
-if not df.empty and vote_col and name_col:
+if not df.empty:
     # 1. TOP STATS
-    total_votes = df[vote_col].sum()
-    # Handle duplicates in names by grouping
-    summary = df.groupby(name_col)[vote_col].sum().reset_index().sort_values(by=vote_col, ascending=False)
+    party_summary = df.groupby('Party')['Votes'].sum().reset_index().sort_values('Votes', ascending=False)
+    total_v = df['Votes'].sum()
     
-    m1, m2, m3 = st.columns(3)
-    if not summary.empty:
-        winner = summary.iloc[0]
-        m1.metric("Leading Candidate", str(winner[name_col]))
-        m2.metric("Total Votes Counted", f"{total_votes:,.0f}")
-        m3.metric("Reporting Areas", len(df[df.columns[0]].unique()))
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Votes Polled", f"{total_v:,}")
+    with col2:
+        top_p = party_summary.iloc[0]
+        st.metric("Leading Party", f"{get_party_info(top_p['Party'])['symbol']} {top_p['Party']}")
+    with col3:
+        st.metric("Reporting Constituencies", df['Constituency'].nunique())
 
-    # 2. VISUALS
-    col_left, col_right = st.columns([2, 1])
+    # 2. MAIN VISUALS
+    c1, c2 = st.columns([2, 1])
     
-    with col_left:
-        st.subheader("Results Overview")
-        fig = px.bar(summary, x=vote_col, y=name_col, orientation='h', 
-                     color=vote_col, color_continuous_scale='RdBu')
-        fig.update_layout(yaxis={'categoryorder':'total ascending'})
+    with c1:
+        st.subheader("National Vote Standings")
+        fig = px.bar(party_summary, x='Votes', y='Party', orientation='h',
+                     color='Party', color_discrete_map={p: m['color'] for p, m in PARTY_META.items()})
+        fig.update_layout(showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
-        
-    with col_right:
-        st.subheader("Leaderboard")
-        st.dataframe(summary, hide_index=True, use_container_width=True)
 
-    # 3. FULL DATA
-    with st.expander("Search Detailed Results"):
-        search = st.text_input("Filter by Candidate or Constituency")
-        if search:
-            mask = df.apply(lambda row: row.astype(str).str.contains(search, case=False).any(), axis=1)
-            st.write(df[mask])
-        else:
-            st.write(df)
+    with c2:
+        st.subheader("Top Candidates")
+        top_cands = df.sort_values('Votes', ascending=False).head(10)
+        # Add symbol to name for display
+        top_cands['Display'] = top_cands['Symbol'] + " " + top_cands['Candidate']
+        st.table(top_cands[['Display', 'Votes', 'Constituency']])
+
+    # 3. DRILL DOWN
+    st.divider()
+    st.subheader("Find Your Constituency")
+    selected = st.selectbox("Search (e.g., Kathmandu-4, Jhapa-5)", sorted(df['Constituency'].unique()))
+    
+    const_df = df[df['Constituency'] == selected].sort_values('Votes', ascending=False)
+    
+    # Show winner card for constituency
+    winner = const_df.iloc[0]
+    st.info(f"🏆 **Current Leader in {selected}:** {winner['Symbol']} {winner['Candidate']} ({winner['Party']}) with {winner['Votes']:,} votes")
+    st.table(const_df[['Candidate', 'Party', 'Symbol', 'Votes']])
+
 else:
-    st.info("🔄 Processing data stream... If this persists, verify the JSON format in the sidebar.")
-    with st.sidebar:
-        if st.checkbox("Debug: View Raw JSON"):
-            st.json(requests.get(SOURCE_URL).json())
+    st.warning("Data is currently loading or source is unreachable. Please check back in a few moments.")
+
+# --- FOOTER ---
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/2/23/Flag_of_Nepal.svg", width=100)
+st.sidebar.markdown("""
+### 2026 Election Guide
+* **NC:** Tree (रुख)
+* **UML:** Sun (सूर्य)
+* **RSP:** Bell (घण्टी)
+* **RPP:** Plough (हलो)
+* **UNP:** Bulb (बत्ती)
+""")
