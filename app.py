@@ -2,111 +2,105 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
+import hashlib
 from streamlit_autorefresh import st_autorefresh
 
-# --- SETUP ---
-st.set_page_config(page_title="Nepal Election 2082 Live", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_live_sync")
+# --- CONFIG ---
+st.set_page_config(page_title="Nepal Live Election 2082", layout="wide")
+st_autorefresh(interval=30000, key="auto_sync")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-# --- OFFICIAL PARTY REGISTRY ---
-# We use the exact abbreviations expected in the 2026 cycle
-OFFICIAL_PARTIES = {
-    "RSP": {"name": "Rastriya Swatantra Party", "color": "#00adef", "symbol": "🔔"},
-    "NC": {"name": "Nepali Congress", "color": "#ff0000", "symbol": "🌳"},
-    "UML": {"name": "CPN (UML)", "color": "#e21b22", "symbol": "☀️"},
-    "NCP": {"name": "Nepali Communist Party", "color": "#dd0000", "symbol": "⭐"},
-    "RPP": {"name": "Rastriya Prajatantra Party", "color": "#ffcc00", "symbol": "🚜"},
-    "SSP": {"name": "Shram Sanskriti Party", "color": "#4B0082", "symbol": "⚒️"}
-}
-
-def get_party_details(raw_party_code):
-    """Zero-logic mapping: Returns official info or the raw string itself."""
-    code = str(raw_party_code).strip().upper()
-    if code in OFFICIAL_PARTIES:
-        return OFFICIAL_PARTIES[code]
-    # If not in our list, return the raw data with a default color
-    return {"name": code, "color": "#555555", "symbol": "🗳️"}
+# --- SMART DATA EXTRACTOR ---
+def get_dynamic_color(name):
+    """Generates a consistent color for any party name using its hash."""
+    # Pre-defined colors for the giants of 2026
+    known = {
+        "RSP": "#00adef", "NC": "#ff0000", "UML": "#e21b22", 
+        "MAOIST": "#dd0000", "RPP": "#ffcc00", "SSP": "#4B0082"
+    }
+    name_upper = str(name).upper()
+    for k, v in known.items():
+        if k in name_upper: return v
+    # If unknown, generate a color from the string itself
+    return "#" + hashlib.md5(name_upper.encode()).hexdigest()[:6]
 
 @st.cache_data(ttl=5)
-def load_data():
+def load_and_extract_logic():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
-        rows = []
-        for const in data:
-            c_name = const.get('name', 'Unknown')
-            for cand in const.get('candidates', []):
-                p_code = cand.get('party', 'UNKNOWN')
-                details = get_party_details(p_code)
-                
-                rows.append({
-                    "Constituency": c_name,
-                    "Candidate": cand.get('name', 'N/A'),
-                    "Party": details['name'],
-                    "Symbol": details['symbol'],
-                    "Color": details['color'],
-                    "Votes": int(cand.get('votes', 0))
-                })
-        return pd.DataFrame(rows)
+        
+        extracted_rows = []
+        for entry in data:
+            constituency = entry.get('name') or entry.get('constituency') or "Unknown"
+            # Find the candidates list regardless of the key name
+            cands_key = next((k for k in entry.keys() if isinstance(entry[k], list)), None)
+            
+            if cands_key:
+                for cand in entry[cands_key]:
+                    # AUTOMATICALLY detect fields for party, name, and votes
+                    p_val = next((v for k, v in cand.items() if 'party' in k.lower() or 'group' in k.lower()), "Independent")
+                    n_val = next((v for k, v in cand.items() if 'name' in k.lower() or 'cand' in k.lower()), "N/A")
+                    v_val = next((v for k, v in cand.items() if 'vote' in k.lower() or 'count' in k.lower()), 0)
+                    
+                    extracted_rows.append({
+                        "Constituency": constituency,
+                        "Candidate": n_val,
+                        "Party": str(p_val).strip(),
+                        "Votes": int(v_val),
+                        "Color": get_dynamic_color(p_val)
+                    })
+        return pd.DataFrame(extracted_rows)
     except Exception as e:
-        st.error(f"Data Fetch Error: {e}")
+        st.error(f"Sync failed: {e}")
         return pd.DataFrame()
 
-df = load_data()
+df = load_and_extract_logic()
 
-# --- THE UI ---
-st.title("🇳🇵 Nepal House of Representatives Election 2082")
-st.markdown("### First-Past-The-Post (FPTP) Live Tracker")
+# --- DYNAMIC UI ---
+st.title("🇳🇵 Nepal Election 2082: Auto-Data Dashboard")
 
 if not df.empty:
-    # 1. TOP HIGHLIGHT: JHAPA-5 (Balen vs Oli)
-    st.divider()
-    jhapa = df[df['Constituency'] == "Jhapa-5"].sort_values('Votes', ascending=False)
-    if not jhapa.empty:
-        st.subheader("🔥 Key Battle: Jhapa-5")
-        cols = st.columns(len(jhapa.head(3)))
-        for i, (_, row) in enumerate(jhapa.head(3).iterrows()):
-            cols[i].metric(
-                label=f"{row['Symbol']} {row['Candidate']}",
-                value=f"{row['Votes']:,} 🗳️",
-                delta=row['Party']
-            )
-
-    # 2. NATIONAL SEAT COUNT
-    st.divider()
-    # Logic: Get the leader of every single constituency
+    # 1. LIVE SUMMARY
+    # Extract ALL parties found in the data
+    found_parties = df['Party'].unique()
+    
+    # 2. FPTP SEAT LEADS (Dynamic)
     winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    seat_tally = winners.groupby('Party').size().reset_index(name='Seats').sort_values('Seats', ascending=False)
+    seat_tally = winners['Party'].value_counts().reset_index()
+    seat_tally.columns = ['Party', 'Seats']
+    
+    # 3. TOP BATTLE: Jhapa-5 (Auto-extracted)
+    jhapa = df[df['Constituency'].str.contains("Jhapa-5", case=False)].sort_values('Votes', ascending=False)
+    if not jhapa.empty:
+        st.subheader("🔥 Top Contest: Jhapa-5")
+        cols = st.columns(min(len(jhapa), 3))
+        for i, (_, row) in enumerate(jhapa.head(len(cols)).iterrows()):
+            cols[i].metric(row['Candidate'], f"{row['Votes']:,} 🗳️", f"{row['Party']}")
 
-    col_main, col_side = st.columns([2, 1])
-    with col_main:
-        st.subheader("Current Leading Seats (National)")
-        fig = px.bar(
-            seat_tally, x='Seats', y='Party', orientation='h', 
-            color='Party', color_discrete_map={row['Party']: get_party_details(row['Party'])['color'] for _, row in seat_tally.iterrows()}
-        )
+    # 4. NATIONAL CHART (No hardcoded parties)
+    st.divider()
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.subheader("National Seat Distribution (FPTP)")
+        # Map colors dynamically based on the labels actually in the chart
+        current_colors = {p: get_dynamic_color(p) for p in seat_tally['Party']}
+        fig = px.bar(seat_tally, x='Seats', y='Party', orientation='h', color='Party',
+                     color_discrete_map=current_colors)
         st.plotly_chart(fig, use_container_width=True)
     
-    with col_side:
-        st.write("### Tally Table")
-        st.dataframe(seat_tally, hide_index=True, use_container_width=True)
+    with c2:
+        st.write("### Live Party Tally")
+        st.dataframe(seat_tally, hide_index=True)
 
-    # 3. LIVE SEARCH
+    # 5. ALL LIVE DATA
     st.divider()
-    with st.expander("🔍 Search All 165 Constituencies"):
-        search = st.text_input("Enter Constituency or Candidate Name")
-        if search:
-            st.write(df[df.apply(lambda x: search.lower() in str(x).lower(), axis=1)])
-        else:
-            st.write(df.sort_values('Votes', ascending=False))
+    with st.expander("🔍 Browse All Constituencies and Parties"):
+        st.write("Parties detected in current stream:", ", ".join(found_parties))
+        st.dataframe(df.sort_values('Votes', ascending=False), use_container_width=True)
 
 else:
-    st.info("🔄 Connecting to live data stream...")
+    st.info("🔄 Checking data stream for candidates and parties...")
 
-# --- FOOTER ---
-st.sidebar.markdown(f"**Last Update:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
-if st.sidebar.button("Force Clear Cache"):
-    st.cache_data.clear()
-    st.rerun()
+st.sidebar.markdown(f"**Last Data Pull:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
