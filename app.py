@@ -1,156 +1,113 @@
 import streamlit as st
-import time
-from data_processor import fetch_live_data, process_election_data
+import pandas as pd
+import requests
+import plotly.express as px
+from streamlit_autorefresh import st_autorefresh
 
-# --- APP CONFIG ---
+# --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="Nepal Election 2082 Live",
-    page_icon="🇳🇵",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    page_title="Live Election Dashboard",
+    page_icon="🗳️",
+    layout="wide"
 )
 
-# --- MODERN UI STYLING ---
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
+# Refresh every 60 seconds
+st_autorefresh(interval=60000, key="datarefresh")
+
+SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
+
+@st.cache_data(ttl=60) # Cache for 60 seconds to save bandwidth
+def load_data():
+    try:
+        response = requests.get(SOURCE_URL)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Flattening the data (Assuming standard Election JSON structure)
+        # We look for a list of constituencies and their candidates
+        rows = []
+        for constituency in data:
+            const_name = constituency.get('name', 'Unknown')
+            region = constituency.get('region', 'N/A')
+            for candidate in constituency.get('candidates', []):
+                rows.append({
+                    "Constituency": const_name,
+                    "Region": region,
+                    "Candidate": candidate.get('name'),
+                    "Party": candidate.get('party'),
+                    "Votes": candidate.get('votes', 0),
+                    "Status": candidate.get('status', 'Pending')
+                })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        st.error(f"Error loading live data: {e}")
+        return pd.DataFrame()
+
+df = load_data()
+
+# --- HEADER ---
+st.title("🗳️ Real-Time Election Results")
+if not df.empty:
+    total_votes = df['Votes'].sum()
+    st.markdown(f"**Total Votes Counted:** {total_votes:,} | **Last Updated:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
+    st.divider()
+
+    # --- TOP METRICS ---
+    # Aggregate data for national view
+    party_totals = df.groupby('Party')['Votes'].sum().reset_index().sort_values(by='Votes', ascending=False)
+    leading_party = party_totals.iloc[0]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Leading Party", leading_party['Party'])
+    m2.metric("Leader Vote Count", f"{leading_party['Votes']:,}")
+    m3.metric("Constituencies Reported", f"{df['Constituency'].nunique()}")
+
+    # --- CHARTS ---
+    c1, c2 = st.columns([2, 1])
+
+    with c1:
+        st.subheader("Vote Share by Party")
+        fig_bar = px.bar(
+            party_totals, 
+            x='Votes', 
+            y='Party', 
+            orientation='h',
+            color='Party',
+            text_auto=',.0f',
+            title="National Vote Standings"
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with c2:
+        st.subheader("Top 5 Candidates")
+        top_5 = df.sort_values(by='Votes', ascending=False).head(5)
+        st.table(top_5[['Candidate', 'Votes', 'Party']])
+
+    # --- DRILL DOWN ---
+    st.divider()
+    st.subheader("Search by Constituency")
+    selected_const = st.selectbox("Select a Region/Constituency", df['Constituency'].unique())
     
-    html, body, [class*="css"] { font-family: 'Outfit', sans-serif; background-color: #0e1117; }
-
-    /* Custom Header */
-    .main-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; border-bottom: 1px solid #333; padding-bottom: 1rem; }
-    .title-area h1 { font-weight: 800; margin: 0; font-size: 2.2rem; color: #fff; letter-spacing: -1px; }
-    .title-area p { color: #888; margin: 0; font-size: 0.9rem; }
-
-    /* Live Badge */
-    .live-badge { background: rgba(255, 75, 75, 0.1); border: 1px solid #ff4b4b; color: #ff4b4b; padding: 4px 12px; border-radius: 50px; font-weight: 700; font-size: 0.75rem; display: flex; align-items: center; gap: 6px; }
-    .pulse { width: 8px; height: 8px; background: #ff4b4b; border-radius: 50%; box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); animation: pulse-red 2s infinite; }
-    @keyframes pulse-red { 0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255, 75, 75, 0); } 100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
-
-    /* Metric Cards */
-    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 2rem; }
-    .metric-card { background: #1a1c23; border: 1px solid #333; padding: 1.2rem; border-radius: 12px; text-align: center; }
-    .metric-val { font-size: 1.8rem; font-weight: 800; color: #fff; display: block; }
-    .metric-lbl { font-size: 0.7rem; color: #666; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
-
-    /* Clash Cards */
-    .clash-card { background: #1a1c23; border: 1px solid #333; border-radius: 16px; min-width: 320px; padding: 20px; position: relative; transition: all 0.3s ease; }
-    .clash-card:hover { border-color: #007bff; transform: translateY(-3px); background: #232731; }
-    .constituency-tag { position: absolute; top: -10px; left: 20px; background: #007bff; color: white; padding: 2px 10px; font-size: 0.7rem; border-radius: 4px; font-weight: 700; }
-    .vs-marker { text-align: center; color: #444; font-weight: 800; font-size: 0.8rem; margin: 10px 0; position: relative; }
-    .vs-marker::before, .vs-marker::after { content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: #333; }
-    .vs-marker::before { left: 0; } .vs-marker::after { right: 0; }
+    const_data = df[df['Constituency'] == selected_const]
     
-    .cand-box { display: flex; justify-content: space-between; align-items: center; }
-    .cand-name { font-weight: 600; color: #fff; font-size: 1rem; }
-    .cand-party { font-size: 0.7rem; color: #777; }
-    .cand-votes { font-weight: 800; color: #fff; font-size: 1.2rem; }
+    col_a, col_b = st.columns(2)
+    with col_a:
+        fig_pie = px.pie(const_data, values='Votes', names='Candidate', title=f"Results for {selected_const}")
+        st.plotly_chart(fig_pie, use_container_width=True)
+    with col_b:
+        st.dataframe(const_data[['Candidate', 'Party', 'Votes', 'Status']], hide_index=True, use_container_width=True)
 
-    /* Hot Seats */
-    .hot-row { display: flex; justify-content: space-between; padding: 12px; border-bottom: 1px solid #222; }
-    .hot-row:last-child { border-bottom: none; }
-    .margin-tag { background: rgba(255, 193, 7, 0.1); color: #ffc107; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
-    </style>
-""", unsafe_allow_html=True)
+else:
+    st.warning("Waiting for data stream... Please check the SOURCE_URL connection.")
 
-# --- LOAD DATA ---
-raw_data = fetch_live_data()
-parties, featured, hot_seats = process_election_data(raw_data)
-
-# --- UI HEADER ---
-st.markdown(f"""
-    <div class="main-header">
-        <div class="title-area">
-            <h1>🇳🇵 Nepal Election 2082 Live</h1>
-            <p>House of Representatives (HoR) Dashboard • Updated {time.strftime('%H:%M:%S')}</p>
-        </div>
-        <div class="live-badge"><span class="pulse"></span>LIVE UPDATES</div>
-    </div>
-""", unsafe_allow_html=True)
-
-# --- TOP METRICS ---
-st.markdown(f"""
-    <div class="metric-grid">
-        <div class="metric-card"><span class="metric-val">165⬡</span><span class="metric-lbl">Constituencies</span></div>
-        <div class="metric-card"><span class="metric-val">7◈</span><span class="metric-lbl">Provinces</span></div>
-        <div class="metric-card"><span class="metric-val">61◉</span><span class="metric-lbl">Parties</span></div>
-        <div class="metric-card"><span class="metric-val">275◆</span><span class="metric-lbl">Total Seats</span></div>
-    </div>
-""", unsafe_allow_html=True)
-
-# --- FEATURED HIGH-STAKES BATTLES ---
-if featured:
-    st.markdown("### 🔥 High-Stakes Battles")
-    cols = st.columns(len(featured) if len(featured) < 3 else 3)
-    for idx, f in enumerate(featured):
-        with cols[idx % 3]:
-            st.markdown(f"""
-                <div class="clash-card">
-                    <div class="constituency-tag">{f['constituency']}</div>
-                    <div class="cand-box">
-                        <div>
-                            <div class="cand-name">{f['c1']['symbol']} {f['c1']['name']}</div>
-                            <div class="cand-party">{f['c1']['party']}</div>
-                        </div>
-                        <div class="cand-votes">{f['c1']['votes']:,}</div>
-                    </div>
-                    <div class="vs-marker">VS</div>
-                    <div class="cand-box">
-                        <div>
-                            <div class="cand-name">{f['c2']['symbol']} {f['c2']['name']}</div>
-                            <div class="cand-party">{f['c2']['party']}</div>
-                        </div>
-                        <div class="cand-votes">{f['c2']['votes']:,}</div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            st.write("") # Spacing
-
-# --- TWO COLUMN BODY ---
-st.markdown("<br>", unsafe_allow_html=True)
-col_l, col_r = st.columns([1, 1], gap="large")
-
-with col_l:
-    st.markdown("### 🏛️ Party Standing")
-    if parties:
-        for p in sorted(parties, key=lambda x: x['leads'], reverse=True):
-            total_leads = sum([x['leads'] for x in parties])
-            p_width = (p['leads'] / total_leads) * 100 if total_leads > 0 else 0
-            st.markdown(f"""
-                <div style="margin-bottom:1.5rem">
-                    <div style="display:flex; justify-content:space-between; font-weight:600; margin-bottom:6px;">
-                        <span>{p['symbol']} {p['name']}</span>
-                        <span>{p['leads']} <span style='color:#666; font-weight:400;'>Leads</span></span>
-                    </div>
-                    <div style="height:10px; background:#222; border-radius:10px; overflow:hidden;">
-                        <div style="height:100%; width:{p_width}%; background:{p['color']}; transition: width 1s;"></div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("Awaiting party data...")
-
-with col_r:
-    st.markdown("### 🎯 Hot Seats (Close Race)")
-    if hot_seats:
-        st.markdown('<div style="background:#1a1c23; border:1px solid #333; border-radius:12px; padding:10px;">', unsafe_allow_html=True)
-        for h in hot_seats:
-            st.markdown(f"""
-                <div class="hot-row">
-                    <div>
-                        <div style="font-weight:700; color:#fff;">{h['area']}</div>
-                        <div style="font-size:0.7rem; color:#888;">Leading: {h['leading']} ({h['party']})</div>
-                    </div>
-                    <div><span class="margin-tag">Gap: {h['margin']}</span></div>
-                </div>
-            """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.info("No narrow margins detected currently.")
-
-# --- FOOTER ---
-st.markdown("---")
-st.markdown("<p style='text-align:center; color:#555; font-size:0.8rem;'>Election 2082 Live Tracker • Built for Real-time Decision Support</p>", unsafe_allow_html=True)
-
-if st.button("🔄 Refresh Data Now"):
+# --- SIDEBAR ---
+st.sidebar.header("Dashboard Controls")
+if st.sidebar.button("Force Data Refresh"):
+    st.cache_data.clear()
     st.rerun()
+
+st.sidebar.markdown("""
+---
+**Note:** This dashboard pulls live data from Cloudflare R2 storage. 
+Data is updated automatically every minute.
+""")
