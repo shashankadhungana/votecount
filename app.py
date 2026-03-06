@@ -4,120 +4,91 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- SETTINGS ---
-st.set_page_config(page_title="Nepal Election 2026", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_refresh")
+# --- ROBUST NEPAL PARTY CONFIG ---
+# We add every possible variation of the name to prevent "Independent" bug
+PARTY_MAP = {
+    "Rastriya Swatantra Party": ["rsp", "bell", "swatantra party", "घण्टी"],
+    "Nepali Congress": ["nc", "congress", "रुख", "tree"],
+    "CPN (UML)": ["uml", "sun", "सूर्य", "cpn uml"],
+    "CPN (Maoist Centre)": ["maoist", "center", "dahal", "माओवादी"],
+    "Rastriya Prajatantra Party": ["rpp", "plough", "lingden", "हलो"],
+    "Janamat Party": ["janamat", "raut", "horn"],
+    "Nagarik Unmukti Party": ["nup", "dhrishita", "civil liberation"]
+}
 
-SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
-
-# Party Meta with Flexible Keys
-PARTY_META = {
+# The colors and symbols associated with the keys above
+PARTY_DETAILS = {
     "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#00adef"},
     "Nepali Congress": {"symbol": "🌳", "color": "#ff0000"},
     "CPN (UML)": {"symbol": "☀️", "color": "#e21b22"},
     "CPN (Maoist Centre)": {"symbol": "☭", "color": "#dd0000"},
     "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffcc00"},
+    "Janamat Party": {"symbol": "📢", "color": "#00ff00"},
     "Independent": {"symbol": "👤", "color": "#808080"}
 }
 
-def get_party_meta(name):
-    name_str = str(name).lower()
-    for key, meta in PARTY_META.items():
-        if key.lower() in name_str or (hasattr(meta, 'get') and name_str in key.lower()):
-            return meta
-    return {"symbol": "🗳️", "color": "#333333"}
+def identify_party(raw_name):
+    """
+    Cleans and matches the party name from JSON to our database.
+    """
+    name = str(raw_name).lower().strip()
+    
+    for official_name, variations in PARTY_MAP.items():
+        if any(v in name for v in variations):
+            return official_name
+    
+    return "Independent" # Default if no keywords match
 
+# --- UPDATED DATA LOADING ---
 @st.cache_data(ttl=10)
-def load_data():
+def load_and_fix_data():
     try:
-        r = requests.get(SOURCE_URL, timeout=10)
+        r = requests.get("https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json", timeout=10)
         data = r.json()
         rows = []
         for const in data:
             c_name = const.get('name', 'Unknown')
             for cand in const.get('candidates', []):
+                # IMPORTANT: We identify the party here!
+                party_label = identify_party(cand.get('party', 'Independent'))
+                meta = PARTY_DETAILS.get(party_label, PARTY_DETAILS["Independent"])
+                
                 rows.append({
                     "Constituency": c_name,
                     "Candidate": cand.get('name', 'N/A'),
-                    "Party": cand.get('party', 'Independent'),
-                    "Votes": int(cand.get('votes', 0))
+                    "Party": party_label,
+                    "Symbol": meta['symbol'],
+                    "Votes": int(cand.get('votes', 0)),
+                    "Color": meta['color']
                 })
         return pd.DataFrame(rows)
-    except Exception as e:
-        st.error(f"Data Fetch Error: {e}")
+    except:
         return pd.DataFrame()
 
-df = load_data()
+df = load_and_fix_data()
 
-# --- HEADER ---
-st.title("🇳🇵 Nepal Election 2026 Live Dashboard")
-st.markdown("---")
+# --- DISPLAY LOGIC ---
+st.title("🇳🇵 Nepal Election Live (Fixed Party Detection)")
 
 if not df.empty:
-    # 1. CALCULATE SEAT PROJECTIONS
-    # FPTP Leads
-    fptp_df = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    fptp_leads = fptp_df['Party'].value_counts().to_dict()
-
-    # PR Projections (3% threshold)
-    total_votes = df['Votes'].sum()
-    party_votes = df.groupby('Party')['Votes'].sum()
+    # Party-wise Seat Count (Winner in each constituency)
+    winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+    seats = winners['Party'].value_counts().reset_index()
+    seats.columns = ['Party', 'Seats']
     
-    projection_list = []
-    for party in party_votes.index:
-        votes = party_votes[party]
-        share = votes / total_votes if total_votes > 0 else 0
+    # Apply Meta to Seat Table
+    seats['Symbol'] = seats['Party'].apply(lambda x: PARTY_DETAILS.get(x, PARTY_DETAILS['Independent'])['symbol'])
+    
+    st.subheader("Live Seat Tally (FPTP)")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Visualizing with Correct Colors
+        color_map = {p: PARTY_DETAILS.get(p, PARTY_DETAILS['Independent'])['color'] for p in seats['Party']}
+        fig = px.bar(seats, x='Seats', y='Party', orientation='h', color='Party', color_discrete_map=color_map)
+        st.plotly_chart(fig, use_container_width=True)
         
-        fptp = fptp_leads.get(party, 0)
-        pr = round(share * 110) if share >= 0.03 else 0 # 110 PR seats
-        
-        meta = get_party_meta(party)
-        projection_list.append({
-            "Party": party,
-            "Symbol": meta['symbol'],
-            "FPTP": fptp,
-            "PR": pr,
-            "Total": fptp + pr,
-            "Color": meta['color']
-        })
-
-    proj_df = pd.DataFrame(projection_list)
-
-    if not proj_df.empty:
-        proj_df = proj_df.sort_values("Total", ascending=False)
-
-        # --- TOP METRIC: RACE TO 138 ---
-        st.subheader("Race to Majority (138 Seats)")
-        cols = st.columns(min(len(proj_df), 4))
-        for i, row in enumerate(proj_df.head(len(cols)).to_dict('records')):
-            with cols[i]:
-                st.metric(f"{row['Symbol']} {row['Party']}", f"{row['Total']} Seats")
-                progress = min(row['Total'] / 138, 1.0)
-                st.progress(progress)
-
-        # --- CHARTS ---
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            fig = px.bar(proj_df, x="Total", y="Party", orientation='h', 
-                         color="Party", color_discrete_map={r['Party']: r['Color'] for r in projection_list},
-                         title="Total Projected Seat Share (FPTP + PR)")
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with c2:
-            st.subheader("Leaderboard")
-            st.dataframe(proj_df[["Symbol", "Party", "FPTP", "PR", "Total"]], hide_index=True)
-
-    # --- SEARCH ---
-    st.divider()
-    search = st.text_input("🔍 Search Constituency Results")
-    if search:
-        st.write(df[df['Constituency'].str.contains(search, case=False)])
-
+    with col2:
+        st.dataframe(seats[['Symbol', 'Party', 'Seats']], hide_index=True)
 else:
-    st.info("Waiting for election data to sync...")
-
-# --- FOOTER ---
-st.sidebar.markdown(f"**Last Sync:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
-if st.sidebar.button("Clear Cache"):
-    st.cache_data.clear()
-    st.rerun()
+    st.error("Could not load data. Check if your JSON URL is public.")
