@@ -4,110 +4,94 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- PAGE CONFIG ---
-st.set_page_config(
-    page_title="Live Election Dashboard",
-    page_icon="🗳️",
-    layout="wide"
-)
+st.set_page_config(page_title="Live Election Dashboard", page_icon="🗳️", layout="wide")
 
-# Refresh every 60 seconds
-st_autorefresh(interval=60000, key="datarefresh")
+# Refresh every 30 seconds
+st_autorefresh(interval=30000, key="datarefresh")
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-@st.cache_data(ttl=60) # Cache for 60 seconds to save bandwidth
+@st.cache_data(ttl=30)
 def load_data():
     try:
-        response = requests.get(SOURCE_URL)
+        response = requests.get(SOURCE_URL, timeout=10)
         response.raise_for_status()
         data = response.json()
         
-        # Flattening the data (Assuming standard Election JSON structure)
-        # We look for a list of constituencies and their candidates
-        rows = []
-        for constituency in data:
-            const_name = constituency.get('name', 'Unknown')
-            region = constituency.get('region', 'N/A')
-            for candidate in constituency.get('candidates', []):
-                rows.append({
-                    "Constituency": const_name,
-                    "Region": region,
-                    "Candidate": candidate.get('name'),
-                    "Party": candidate.get('party'),
-                    "Votes": candidate.get('votes', 0),
-                    "Status": candidate.get('status', 'Pending')
-                })
-        return pd.DataFrame(rows)
+        # If data is a list of dicts, pandas can usually load it directly
+        # or we might need to normalize it if it's nested.
+        df = pd.json_normalize(data)
+        
+        # Standardizing column names (Edit these if your JSON keys are different!)
+        # Map: 'json_key': 'Display Name'
+        column_mapping = {
+            'name': 'Constituency',
+            'candidate_name': 'Candidate',
+            'party_name': 'Party',
+            'votes': 'Votes'
+        }
+        df = df.rename(columns=column_mapping)
+        
+        # Ensure Votes are numeric
+        if 'Votes' in df.columns:
+            df['Votes'] = pd.to_numeric(df['Votes'], errors='coerce').fillna(0)
+            
+        return df
     except Exception as e:
-        st.error(f"Error loading live data: {e}")
+        st.error(f"Connection Error: {e}")
         return pd.DataFrame()
 
 df = load_data()
 
-# --- HEADER ---
-st.title("🗳️ Real-Time Election Results")
-if not df.empty:
-    total_votes = df['Votes'].sum()
-    st.markdown(f"**Total Votes Counted:** {total_votes:,} | **Last Updated:** {pd.Timestamp.now().strftime('%H:%M:%S')}")
-    st.divider()
+# --- SIDEBAR DEBUG ---
+with st.sidebar:
+    st.header("Settings")
+    show_raw = st.checkbox("Show Raw Data (Debug)")
+    if st.button("Force Refresh"):
+        st.cache_data.clear()
+        st.rerun()
 
-    # --- TOP METRICS ---
-    # Aggregate data for national view
-    party_totals = df.groupby('Party')['Votes'].sum().reset_index().sort_values(by='Votes', ascending=False)
-    leading_party = party_totals.iloc[0]
+if show_raw:
+    st.write("Raw JSON Data Structure:")
+    st.json(requests.get(SOURCE_URL).json())
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Leading Party", leading_party['Party'])
-    m2.metric("Leader Vote Count", f"{leading_party['Votes']:,}")
-    m3.metric("Constituencies Reported", f"{df['Constituency'].nunique()}")
-
-    # --- CHARTS ---
-    c1, c2 = st.columns([2, 1])
-
-    with c1:
-        st.subheader("Vote Share by Party")
-        fig_bar = px.bar(
-            party_totals, 
-            x='Votes', 
-            y='Party', 
-            orientation='h',
-            color='Party',
-            text_auto=',.0f',
-            title="National Vote Standings"
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with c2:
-        st.subheader("Top 5 Candidates")
-        top_5 = df.sort_values(by='Votes', ascending=False).head(5)
-        st.table(top_5[['Candidate', 'Votes', 'Party']])
-
-    # --- DRILL DOWN ---
-    st.divider()
-    st.subheader("Search by Constituency")
-    selected_const = st.selectbox("Select a Region/Constituency", df['Constituency'].unique())
+# --- MAIN DASHBOARD LOGIC ---
+if not df.empty and 'Votes' in df.columns:
+    # 1. Calculate Aggregates
+    # Grouping by Candidate/Party to get national totals
+    # (Adjust 'Candidate' or 'Party' based on what's in your JSON)
+    group_col = 'Candidate' if 'Candidate' in df.columns else df.columns[0]
+    national_totals = df.groupby(group_col)['Votes'].sum().reset_index().sort_values(by='Votes', ascending=False)
     
-    const_data = df[df['Constituency'] == selected_const]
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        fig_pie = px.pie(const_data, values='Votes', names='Candidate', title=f"Results for {selected_const}")
-        st.plotly_chart(fig_pie, use_container_width=True)
-    with col_b:
-        st.dataframe(const_data[['Candidate', 'Party', 'Votes', 'Status']], hide_index=True, use_container_width=True)
+    # Safety check: ensure we have rows before calling .iloc[0]
+    if len(national_totals) > 0:
+        winner = national_totals.iloc[0]
+        total_votes = national_totals['Votes'].sum()
 
+        # 2. Top Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Leading", str(winner[group_col]))
+        m2.metric("Total Votes", f"{total_votes:,.0f}")
+        m3.metric("Data Points", len(df))
+
+        # 3. Charts
+        c1, c2 = st.columns([2, 1])
+        
+        with c1:
+            fig = px.bar(national_totals, x='Votes', y=group_col, orientation='h', 
+                         title="Votes by Candidate/Party", color='Votes',
+                         color_continuous_scale='Reds')
+            st.plotly_chart(fig, use_container_width=True)
+            
+        with c2:
+            st.subheader("Leaderboard")
+            st.dataframe(national_totals, hide_index=True, use_container_width=True)
+
+        # 4. Detailed View
+        st.divider()
+        st.subheader("All Records")
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.warning("Data loaded but no vote counts found in the expected format.")
 else:
-    st.warning("Waiting for data stream... Please check the SOURCE_URL connection.")
-
-# --- SIDEBAR ---
-st.sidebar.header("Dashboard Controls")
-if st.sidebar.button("Force Data Refresh"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("""
----
-**Note:** This dashboard pulls live data from Cloudflare R2 storage. 
-Data is updated automatically every minute.
-""")
+    st.error("Dashboard is empty. Please enable 'Show Raw Data' in the sidebar to inspect the JSON structure.")
