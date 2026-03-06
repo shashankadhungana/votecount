@@ -4,116 +4,113 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- NEPAL PARTY CONFIGURATION ---
-PARTY_META = {
-    "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#00adef", "alias": "RSP"},
-    "Nepali Congress": {"symbol": "🌳", "color": "#ff0000", "alias": "NC"},
-    "CPN (UML)": {"symbol": "☀️", "color": "#e21b22", "alias": "UML"},
-    "Nepal Communist Party": {"symbol": "⭐", "color": "#dd0000", "alias": "NCP"},
-    "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffcc00", "alias": "RPP"},
-    "Ujyalo Nepal Party": {"symbol": "💡", "color": "#f9d71c", "alias": "UNP"},
-    "Janamat Party": {"symbol": "📢", "color": "#00ff00", "alias": "Janamat"},
-    "Independent": {"symbol": "👤", "color": "#808080", "alias": "IND"}
-}
+# --- CONFIG & THEME ---
+st.set_page_config(page_title="Nepal Election 2026: The PM Race", page_icon="🇳🇵", layout="wide")
+st_autorefresh(interval=30000, key="nepal_live")
 
-def get_party_info(party_name):
-    # Matches name or tries to find a partial match
-    for p, meta in PARTY_META.items():
-        if p.lower() in str(party_name).lower():
-            return meta
-    return {"symbol": "🗳️", "color": "#333333", "alias": "Other"}
-
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Nepal Election 2026 Live", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_refresh")
-
+# Live Data Source
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-def flatten_nepal_data(data):
+# PM Contenders and their specific Constituencies
+PM_CONTENDERS = {
+    "Balen Shah": {"constituency": "Jhapa-5", "party": "Rastriya Swatantra Party", "symbol": "🔔", "color": "#00adef"},
+    "KP Sharma Oli": {"constituency": "Jhapa-5", "party": "CPN (UML)", "symbol": "☀️", "color": "#e21b22"},
+    "Gagan Thapa": {"constituency": "Sarlahi-4", "party": "Nepali Congress", "symbol": "🌳", "color": "#ff0000"}
+}
+
+# --- DATA PROCESSING ---
+def flatten_data(data):
     rows = []
-    # Assumes structure: [ { name: "Jhapa-5", candidates: [...] }, ... ]
     for const in data:
         c_name = const.get('name', 'Unknown')
         for cand in const.get('candidates', []):
-            p_name = cand.get('party', 'Independent')
-            meta = get_party_info(p_name)
             rows.append({
                 "Constituency": c_name,
-                "Candidate": cand.get('name', 'N/A'),
-                "Party": p_name,
-                "Symbol": meta['symbol'],
-                "Votes": int(cand.get('votes', 0)),
-                "Color": meta['color']
+                "Candidate": cand.get('name', 'Unknown'),
+                "Party": cand.get('party', 'Independent'),
+                "Votes": int(cand.get('votes', 0))
             })
     return pd.DataFrame(rows)
 
 @st.cache_data(ttl=10)
-def load_data():
+def load_live_results():
     try:
         r = requests.get(SOURCE_URL, timeout=10)
-        return flatten_nepal_data(r.json())
+        return flatten_data(r.json())
     except:
         return pd.DataFrame()
 
-df = load_data()
+df = load_live_results()
 
 # --- HEADER ---
-st.markdown("<h1 style='text-align: center;'>🇳🇵 Nepal Election 2026 Live Results</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center;'>Last Update: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #DC143C;'>🇳🇵 Nepal General Election 2026 Live</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center;'>The Battle for Singha Durbar</h4>", unsafe_allow_html=True)
 
 if not df.empty:
-    # 1. TOP STATS
-    party_summary = df.groupby('Party')['Votes'].sum().reset_index().sort_values('Votes', ascending=False)
-    total_v = df['Votes'].sum()
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Votes Polled", f"{total_v:,}")
-    with col2:
-        top_p = party_summary.iloc[0]
-        st.metric("Leading Party", f"{get_party_info(top_p['Party'])['symbol']} {top_p['Party']}")
-    with col3:
-        st.metric("Reporting Constituencies", df['Constituency'].nunique())
+    # --- SECTION 1: THE PM RACE (The "Big Three") ---
+    st.divider()
+    st.subheader("🔥 High-Stakes PM Race Tracker")
+    pm_cols = st.columns(len(PM_CONTENDERS))
 
-    # 2. MAIN VISUALS
+    for i, (name, info) in enumerate(PM_CONTENDERS.items()):
+        with pm_cols[i]:
+            # Filter data for this specific candidate
+            match = df[(df['Candidate'].str.contains(name, case=False)) & 
+                       (df['Constituency'] == info['constituency'])]
+            
+            votes = match['Votes'].sum() if not match.empty else 0
+            
+            # Find the closest rival in that constituency
+            rivals = df[(df['Constituency'] == info['constituency']) & 
+                        (~df['Candidate'].str.contains(name, case=False))]
+            rival_votes = rivals['Votes'].max() if not rivals.empty else 0
+            margin = votes - rival_votes
+
+            # Visual Card
+            st.markdown(f"""
+            <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; border-left: 10px solid {info['color']};">
+                <h2 style="margin:0;">{info['symbol']} {name}</h2>
+                <p style="margin:0; color: gray;">{info['party']}</p>
+                <p style="margin:0; font-weight: bold;">{info['constituency']}</p>
+                <hr>
+                <h1 style="margin:0; color: {info['color']};">{votes:,}</h1>
+                <p style="margin:0;">Lead: <span style="color: {'green' if margin > 0 else 'red'};">{margin:+,}</span></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # --- SECTION 2: PARTY STANDINGS ---
+    st.divider()
     c1, c2 = st.columns([2, 1])
     
     with c1:
-        st.subheader("National Vote Standings")
-        fig = px.bar(party_summary, x='Votes', y='Party', orientation='h',
-                     color='Party', color_discrete_map={p: m['color'] for p, m in PARTY_META.items()})
-        fig.update_layout(showlegend=False)
+        st.subheader("National Party Lead (Seats & Votes)")
+        party_votes = df.groupby('Party')['Votes'].sum().reset_index().sort_values('Votes', ascending=False)
+        fig = px.bar(party_votes, x='Votes', y='Party', color='Party', orientation='h',
+                     title="National Popular Vote Share",
+                     color_discrete_map={k: v['color'] for k, v in PM_CONTENDERS.items()})
         st.plotly_chart(fig, use_container_width=True)
 
     with c2:
-        st.subheader("Top Candidates")
-        top_cands = df.sort_values('Votes', ascending=False).head(10)
-        # Add symbol to name for display
-        top_cands['Display'] = top_cands['Symbol'] + " " + top_cands['Candidate']
-        st.table(top_cands[['Display', 'Votes', 'Constituency']])
+        st.subheader("Latest Constituency Winners")
+        # Showing the top candidate for each constituency (simulated "Wins")
+        winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
+        st.dataframe(winners[['Constituency', 'Candidate', 'Votes']], hide_index=True)
 
-    # 3. DRILL DOWN
+    # --- SECTION 3: SEARCH ---
     st.divider()
-    st.subheader("Find Your Constituency")
-    selected = st.selectbox("Search (e.g., Kathmandu-4, Jhapa-5)", sorted(df['Constituency'].unique()))
-    
-    const_df = df[df['Constituency'] == selected].sort_values('Votes', ascending=False)
-    
-    # Show winner card for constituency
-    winner = const_df.iloc[0]
-    st.info(f"🏆 **Current Leader in {selected}:** {winner['Symbol']} {winner['Candidate']} ({winner['Party']}) with {winner['Votes']:,} votes")
-    st.table(const_df[['Candidate', 'Party', 'Symbol', 'Votes']])
+    query = st.text_input("🔍 Search any Constituency (e.g. Kathmandu, Jhapa, Chitwan)")
+    if query:
+        search_results = df[df['Constituency'].str.contains(query, case=False)]
+        st.table(search_results.sort_values('Votes', ascending=False))
 
 else:
-    st.warning("Data is currently loading or source is unreachable. Please check back in a few moments.")
+    st.error("Unable to reach Election Server. Retrying in 30 seconds...")
 
-# --- FOOTER ---
-st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/2/23/Flag_of_Nepal.svg", width=100)
-st.sidebar.markdown("""
-### 2026 Election Guide
-* **NC:** Tree (रुख)
-* **UML:** Sun (सूर्य)
-* **RSP:** Bell (घण्टी)
-* **RPP:** Plough (हलो)
-* **UNP:** Bulb (बत्ती)
+# --- SIDEBAR INFO ---
+st.sidebar.title("Election 2082 B.S.")
+st.sidebar.info("""
+**Major Contests:**
+- **Jhapa-5:** Balen Shah 🔔 vs KP Oli ☀️
+- **Sarlahi-4:** Gagan Thapa 🌳
+- **Chitwan-2:** Rabi Lamichhane 🔔
 """)
