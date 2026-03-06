@@ -4,113 +4,114 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- CONFIG & THEME ---
-st.set_page_config(page_title="Nepal Election 2026: The PM Race", page_icon="🇳🇵", layout="wide")
-st_autorefresh(interval=30000, key="nepal_live")
+# --- NEPAL ELECTION SETTINGS ---
+TOTAL_FPTP_SEATS = 165
+TOTAL_PR_SEATS = 110
+MAJORITY_MARK = 138
 
-# Live Data Source
-SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
-
-# PM Contenders and their specific Constituencies
-PM_CONTENDERS = {
-    "Balen Shah": {"constituency": "Jhapa-5", "party": "Rastriya Swatantra Party", "symbol": "🔔", "color": "#00adef"},
-    "KP Sharma Oli": {"constituency": "Jhapa-5", "party": "CPN (UML)", "symbol": "☀️", "color": "#e21b22"},
-    "Gagan Thapa": {"constituency": "Sarlahi-4", "party": "Nepali Congress", "symbol": "🌳", "color": "#ff0000"}
+PARTY_META = {
+    "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#00adef", "alias": "RSP"},
+    "Nepali Congress": {"symbol": "🌳", "color": "#ff0000", "alias": "NC"},
+    "CPN (UML)": {"symbol": "☀️", "color": "#e21b22", "alias": "UML"},
+    "CPN (Maoist Centre)": {"symbol": "☭", "color": "#dd0000", "alias": "Maoist"},
+    "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffcc00", "alias": "RPP"},
+    "Independent": {"symbol": "👤", "color": "#808080", "alias": "IND"}
 }
 
-# --- DATA PROCESSING ---
-def flatten_data(data):
-    rows = []
-    for const in data:
-        c_name = const.get('name', 'Unknown')
-        for cand in const.get('candidates', []):
-            rows.append({
-                "Constituency": c_name,
-                "Candidate": cand.get('name', 'Unknown'),
-                "Party": cand.get('party', 'Independent'),
-                "Votes": int(cand.get('votes', 0))
-            })
-    return pd.DataFrame(rows)
+st.set_page_config(page_title="Nepal 2026: Seat Projection", layout="wide")
+st_autorefresh(interval=30000, key="projection_refresh")
+
+SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
 @st.cache_data(ttl=10)
-def load_live_results():
+def load_and_project():
     try:
-        r = requests.get(SOURCE_URL, timeout=10)
-        return flatten_data(r.json())
+        r = requests.get(SOURCE_URL)
+        data = r.json()
+        
+        # 1. Process FPTP (Leading in each constituency)
+        fptp_rows = []
+        for const in data:
+            c_name = const.get('name')
+            cands = sorted(const.get('candidates', []), key=lambda x: x['votes'], reverse=True)
+            if cands:
+                fptp_rows.append({
+                    "Constituency": c_name,
+                    "Leader": cands[0]['name'],
+                    "Party": cands[0]['party'],
+                    "Votes": cands[0]['votes']
+                })
+        
+        fptp_df = pd.DataFrame(fptp_rows)
+        fptp_leads = fptp_df['Party'].value_counts().to_dict()
+
+        # 2. Process PR (Based on total national vote share)
+        # In Nepal, PR seats are allocated if party gets >3% vote
+        all_cands = []
+        for const in data: all_cands.extend(const.get('candidates', []))
+        
+        votes_df = pd.DataFrame(all_cands)
+        total_votes = votes_df['votes'].sum()
+        party_votes = votes_df.groupby('party')['votes'].sum()
+        
+        pr_projections = {}
+        for party, v in party_votes.items():
+            share = v / total_votes
+            if share >= 0.03: # 3% Threshold
+                pr_projections[party] = round(share * TOTAL_PR_SEATS)
+        
+        return fptp_leads, pr_projections, total_votes
     except:
-        return pd.DataFrame()
+        return {}, {}, 0
 
-df = load_live_results()
+fptp_leads, pr_leads, total_v = load_and_project()
 
-# --- HEADER ---
-st.markdown("<h1 style='text-align: center; color: #DC143C;'>🇳🇵 Nepal General Election 2026 Live</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center;'>The Battle for Singha Durbar</h4>", unsafe_allow_html=True)
+# --- UI: THE RACE TO 138 ---
+st.title("🗳️ Nepal 2026: The Race to 138")
+st.subheader("Combined FPTP Leads + PR Projections")
 
-if not df.empty:
-    # --- SECTION 1: THE PM RACE (The "Big Three") ---
-    st.divider()
-    st.subheader("🔥 High-Stakes PM Race Tracker")
-    pm_cols = st.columns(len(PM_CONTENDERS))
+# Combine Data
+all_parties = set(list(fptp_leads.keys()) + list(pr_leads.keys()))
+projection_data = []
 
-    for i, (name, info) in enumerate(PM_CONTENDERS.items()):
-        with pm_cols[i]:
-            # Filter data for this specific candidate
-            match = df[(df['Candidate'].str.contains(name, case=False)) & 
-                       (df['Constituency'] == info['constituency'])]
-            
-            votes = match['Votes'].sum() if not match.empty else 0
-            
-            # Find the closest rival in that constituency
-            rivals = df[(df['Constituency'] == info['constituency']) & 
-                        (~df['Candidate'].str.contains(name, case=False))]
-            rival_votes = rivals['Votes'].max() if not rivals.empty else 0
-            margin = votes - rival_votes
+for p in all_parties:
+    f = fptp_leads.get(p, 0)
+    r = pr_leads.get(p, 0)
+    meta = PARTY_META.get(p, {"symbol": "🗳️", "color": "#333333"})
+    projection_data.append({
+        "Party": f"{meta['symbol']} {p}",
+        "FPTP Leads": f,
+        "PR Projected": r,
+        "Total Projected": f + r,
+        "Color": meta['color']
+    })
 
-            # Visual Card
-            st.markdown(f"""
-            <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; border-left: 10px solid {info['color']};">
-                <h2 style="margin:0;">{info['symbol']} {name}</h2>
-                <p style="margin:0; color: gray;">{info['party']}</p>
-                <p style="margin:0; font-weight: bold;">{info['constituency']}</p>
-                <hr>
-                <h1 style="margin:0; color: {info['color']};">{votes:,}</h1>
-                <p style="margin:0;">Lead: <span style="color: {'green' if margin > 0 else 'red'};">{margin:+,}</span></p>
-            </div>
-            """, unsafe_allow_html=True)
+proj_df = pd.DataFrame(projection_data).sort_values("Total Projected", ascending=False)
 
-    # --- SECTION 2: PARTY STANDINGS ---
-    st.divider()
-    c1, c2 = st.columns([2, 1])
-    
-    with c1:
-        st.subheader("National Party Lead (Seats & Votes)")
-        party_votes = df.groupby('Party')['Votes'].sum().reset_index().sort_values('Votes', ascending=False)
-        fig = px.bar(party_votes, x='Votes', y='Party', color='Party', orientation='h',
-                     title="National Popular Vote Share",
-                     color_discrete_map={k: v['color'] for k, v in PM_CONTENDERS.items()})
-        st.plotly_chart(fig, use_container_width=True)
+# 1. MAJORITY PROGRESS BAR (The "Wick" Chart)
+st.write("### Majority Progress")
+for _, row in proj_df.head(4).iterrows():
+    cols = st.columns([1, 4])
+    cols[0].write(f"**{row['Party']}**")
+    progress = min(row['Total Projected'] / MAJORITY_MARK, 1.0)
+    cols[1].progress(progress, text=f"{row['Total Projected']} / 138 seats")
 
-    with c2:
-        st.subheader("Latest Constituency Winners")
-        # Showing the top candidate for each constituency (simulated "Wins")
-        winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-        st.dataframe(winners[['Constituency', 'Candidate', 'Votes']], hide_index=True)
+# 2. SEAT DISTRIBUTION CHART
+st.divider()
+fig = px.bar(proj_df, x="Party", y=["FPTP Leads", "PR Projected"], 
+             title="Projected Seat Composition",
+             color_discrete_sequence=["#004d99", "#66b3ff"])
+st.plotly_chart(fig, use_container_width=True)
 
-    # --- SECTION 3: SEARCH ---
-    st.divider()
-    query = st.text_input("🔍 Search any Constituency (e.g. Kathmandu, Jhapa, Chitwan)")
-    if query:
-        search_results = df[df['Constituency'].str.contains(query, case=False)]
-        st.table(search_results.sort_values('Votes', ascending=False))
+# 3. DETAILED TABLE
+st.subheader("Live Seat Tally")
+st.table(proj_df[["Party", "FPTP Leads", "PR Projected", "Total Projected"]])
 
-else:
-    st.error("Unable to reach Election Server. Retrying in 30 seconds...")
-
-# --- SIDEBAR INFO ---
-st.sidebar.title("Election 2082 B.S.")
-st.sidebar.info("""
-**Major Contests:**
-- **Jhapa-5:** Balen Shah 🔔 vs KP Oli ☀️
-- **Sarlahi-4:** Gagan Thapa 🌳
-- **Chitwan-2:** Rabi Lamichhane 🔔
+st.sidebar.markdown(f"""
+### Election Stats
+- **Total Votes:** {total_v:,}
+- **FPTP Counted:** {len(fptp_leads)} / 165
+- **PR Threshold:** 3.0%
+---
+*Projections are based on live vote-share trends and subject to change as more rural ballots are opened.*
 """)
