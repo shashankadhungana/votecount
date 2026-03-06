@@ -21,36 +21,34 @@ def fetch_live_data():
 def get_party_meta(party_name):
     """Returns official symbols and colors for 2082 parties with ultra-robust matching."""
     if not party_name:
-        return {"symbol": "🔲", "color": "#6c757d"}
+        return {"symbol": "🔲", "color": "#6c757d", "name": "Independent"}
         
     p_name = str(party_name).strip()
+    p_name_lower = p_name.lower()
     
     # Comprehensive Mapping for 2082 (2026) Election with aliases
     mapping = {
-        "Nepali Congress": {"symbol": "🌳", "color": "#28a745", "keywords": ["congress", "nc"]},
-        "CPN (UML)": {"symbol": "☀️", "color": "#dc3545", "keywords": ["uml", "cpn uml", "cpn(uml)"]},
-        "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#007bff", "keywords": ["rsp", "swatantra", "bell"]},
-        "CPN (Maoist Centre)": {"symbol": "☭", "color": "#c82333", "keywords": ["maoist", "centre", "center"]},
-        "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffc107", "keywords": ["rpp", "prajatantra"]},
-        "Janmat Party": {"symbol": "📢", "color": "#fd7e14", "keywords": ["janmat", "ck raut"]},
-        "Nagarik Unmukti Party": {"symbol": "🏠", "color": "#6f42c1", "keywords": ["nup", "unmukti"]},
-        "Nepal Communist Party": {"symbol": "⭐", "color": "#ff0000", "keywords": ["communist", "ncp"]},
-        "Ujyalo Nepal Party": {"symbol": "💡", "color": "#f8f9fa", "keywords": ["ujyalo", "bulb", "kulman"]},
-        "Independent": {"symbol": "🔲", "color": "#6c757d", "keywords": ["ind", "independent", "swatantra"]}
+        "Nepali Congress": {"symbol": "🌳", "color": "#28a745", "keywords": ["congress", "nc", "🌳"]},
+        "CPN (UML)": {"symbol": "☀️", "color": "#dc3545", "keywords": ["uml", "cpn uml", "cpn(uml)", "☀️"]},
+        "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#007bff", "keywords": ["rsp", "swatantra", "bell", "🔔"]},
+        "CPN (Maoist Centre)": {"symbol": "☭", "color": "#c82333", "keywords": ["maoist", "centre", "center", "maobadi", "☭"]},
+        "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffc107", "keywords": ["rpp", "prajatantra", "🚜"]},
+        "Janmat Party": {"symbol": "📢", "color": "#fd7e14", "keywords": ["janmat", "ck raut", "📢"]},
+        "Nagarik Unmukti Party": {"symbol": "🏠", "color": "#6f42c1", "keywords": ["nup", "unmukti", "🏠"]},
+        "Nepal Communist Party": {"symbol": "⭐", "color": "#ff0000", "keywords": ["communist", "ncp", "⭐"]},
+        "Ujyalo Nepal Party": {"symbol": "💡", "color": "#f8f9fa", "keywords": ["ujyalo", "bulb", "kulman", "💡"]},
+        "Independent": {"symbol": "🔲", "color": "#6c757d", "keywords": ["ind", "independent", "swatantra", "🔲"]}
     }
     
-    p_name_lower = p_name.lower()
-    
     # 1. Look for keyword matches first (most robust)
-    for main_name, data in mapping.items():
+    for official_name, data in mapping.items():
         if any(kw in p_name_lower for kw in data["keywords"]):
-            return data
+            # Return a copy including the standardized name
+            res = data.copy()
+            res["name"] = official_name
+            return res
             
-    # 2. Check direct key match
-    if p_name in mapping:
-        return mapping[p_name]
-            
-    return mapping["Independent"]
+    return {"symbol": "🔲", "color": "#6c757d", "name": "Independent"}
 
 def process_election_data(raw_data):
     """Processes raw JSON into validated UI components with multi-key fallback."""
@@ -62,36 +60,27 @@ def process_election_data(raw_data):
         return [], [], []
 
     # 1. Aggregate Party Stats
+    # We use the standardized names from get_party_meta to ensure counts are combined correctly
     counts = {}
     for item in raw_data:
-        # Determine leading party by checking root key or the first candidate's party info
         cands = item.get('candidates', [])
-        p_raw = None
+        p_raw = "Independent"
         
-        if cands and isinstance(cands, list):
-            # Check candidate level first as it's more granular
-            p_raw = cands[0].get('party') or cands[0].get('party_name') or cands[0].get('partyName')
+        # Check candidate level for the leader
+        if cands and isinstance(cands, list) and len(cands) > 0:
+            leader = cands[0]
+            # Try every possible key variation for the party
+            p_raw = leader.get('party') or leader.get('party_name') or leader.get('partyName') or leader.get('party_id')
             
+        # Fallback to item root
         if not p_raw:
-            p_raw = item.get('leading_party') or item.get('party_name') or 'Independent'
+            p_raw = item.get('leading_party') or item.get('party_name') or item.get('party') or "Independent"
             
         meta = get_party_meta(p_raw)
-        p_final_name = next((k for k, v in get_party_meta(p_raw).items() if k != "symbol" and k != "color" and k != "keywords"), p_raw)
-        
-        # Standardize party name for counting
-        standard_name = "Independent"
-        for official_name, m in {
-            "Nepali Congress": ["congress", "nc"], 
-            "CPN (UML)": ["uml"], 
-            "Rastriya Swatantra Party": ["rsp"],
-            "CPN (Maoist Centre)": ["maoist"]
-        }.items():
-            if any(kw in str(p_raw).lower() for kw in m):
-                standard_name = official_name
-                break
-        
+        standard_name = meta["name"]
         counts[standard_name] = counts.get(standard_name, 0) + 1
 
+    # Format the party list for the UI
     for name, leads in counts.items():
         meta = get_party_meta(name)
         parties_list.append({
@@ -119,19 +108,22 @@ def process_election_data(raw_data):
             p1_raw = c1.get('party') or c1.get('party_name') or c1.get('partyName') or 'Independent'
             p2_raw = c2.get('party') or c2.get('party_name') or c2.get('partyName') or 'Independent'
             
+            m1 = get_party_meta(p1_raw)
+            m2 = get_party_meta(p2_raw)
+            
             featured_list.append({
                 "constituency": item.get('name') or item.get('constituency') or 'N/A',
                 "c1": {
                     "name": c1.get('name', 'N/A'),
-                    "party": p1_raw,
+                    "party": m1["name"],
                     "votes": c1.get('votes', 0),
-                    "symbol": get_party_meta(p1_raw)["symbol"]
+                    "symbol": m1["symbol"]
                 },
                 "c2": {
                     "name": c2.get('name', 'N/A'),
-                    "party": p2_raw,
+                    "party": m2["name"],
                     "votes": c2.get('votes', 0),
-                    "symbol": get_party_meta(p2_raw)["symbol"]
+                    "symbol": m2["symbol"]
                 }
             })
 
@@ -143,13 +135,15 @@ def process_election_data(raw_data):
                 v1 = int(cands[0].get('votes', 0))
                 v2 = int(cands[1].get('votes', 0))
                 margin = abs(v1 - v2)
-                if margin < 2000 and (v1 > 0 or v2 > 0):
+                # Ensure we only count active races
+                if margin < 2500 and (v1 > 0 or v2 > 0):
                     p_raw = cands[0].get('party') or cands[0].get('party_name') or 'IND'
+                    meta = get_party_meta(p_raw)
                     hot_seats_list.append({
                         "area": item.get('name', 'Unknown'),
                         "leading": cands[0].get('name', 'N/A'),
                         "margin": margin,
-                        "party": p_raw
+                        "party": meta["name"]
                     })
             except: continue
 
