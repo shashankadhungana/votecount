@@ -4,121 +4,102 @@ import time
 
 SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30) # High frequency cache for live results
 def fetch_live_data():
-    """Fetches raw JSON data from the source URL with retry logic."""
-    # We use a session for better connection pooling
-    session = requests.Session()
-    retries = 3
-    for i in range(retries):
-        try:
-            response = session.get(SOURCE_URL, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            # Basic validation: Check if we got a list
-            if isinstance(data, list):
-                return data
-            else:
-                st.warning(f"Unexpected data format: Received {type(data)}")
-                return []
-        except Exception as e:
-            if i < retries - 1:
-                time.sleep(1) # Wait before retry
-                continue
-            st.error(f"⚠️ Connection Error: Could not reach the data source. (Attempt {i+1})")
-            return []
-    return []
+    """Fetches raw JSON data with enhanced error handling and timeout."""
+    try:
+        response = requests.get(SOURCE_URL, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception as e:
+        st.sidebar.error(f"Data Fetch Failed: {e}")
+        return []
 
 def process_election_data(raw_data):
-    """Processes raw JSON with ultra-safe guards to prevent blank screens."""
+    """Processes raw JSON into validated UI components with proper symbol mapping."""
     parties_list = []
     featured_list = []
     hot_seats_list = []
 
-    # If data is empty, return early to let app.py handle "No Data" state
-    if not raw_data or not isinstance(raw_data, list):
+    if not raw_data:
         return [], [], []
 
-    party_symbols = {
-        "Nepali Congress": "🌳",
-        "CPN (UML)": "☀️",
-        "Rastriya Swatantra Party": "🔔",
-        "CPN (Maoist Centre)": "☭",
-        "RPP": "🚜",
-        "Independent": "🔲"
+    # Official 2082 (2026) Party Mappings
+    party_meta = {
+        "Nepali Congress": {"symbol": "🌳", "color": "#28a745"},
+        "CPN (UML)": {"symbol": "☀️", "color": "#dc3545"},
+        "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#007bff"},
+        "CPN (Maoist Centre)": {"symbol": "☭", "color": "#c82333"},
+        "RPP": {"symbol": "🚜", "color": "#ffc107"},
+        "Janmat Party": {"symbol": "📢", "color": "#fd7e14"},
+        "Nagarik Unmukti Party": {"symbol": "🏠", "color": "#6f42c1"},
+        "Independent": {"symbol": "🔲", "color": "#6c757d"}
     }
 
-    # 1. Process Party Stats (Leading/Won)
-    party_counts = {}
+    # 1. Aggregate Party Stats
+    counts = {}
     for item in raw_data:
-        # Use .get() everywhere to avoid KeyErrors
-        lead_party = item.get('leading_party') or item.get('party_name') or 'Independent'
-        party_counts[lead_party] = party_counts.get(lead_party, 0) + 1
+        p_name = item.get('leading_party', 'Independent')
+        counts[p_name] = counts.get(p_name, 0) + 1
 
-    colors = ["#00adef", "#008000", "#ff0000", "#e21b22", "#ffcc00", "#888888"]
-    for i, (name, leads) in enumerate(party_counts.items()):
+    for name, leads in counts.items():
+        meta = party_meta.get(name, party_meta["Independent"])
         parties_list.append({
             "name": name,
-            "symbol": party_symbols.get(name, "🚩"),
+            "symbol": meta["symbol"],
             "leads": leads,
-            "wins": 0,
-            "color": colors[i % len(colors)]
+            "color": meta["color"]
         })
 
-    # 2. Process Featured Leaders (Clash Cards)
-    # These are names commonly looked for in Nepal elections
-    featured_names = ["Balen Shah", "Gagan Thapa", "Rabi Lamichhane", "KP Sharma Oli", "Sher Bahadur Deuba", "Arzu Rana"]
+    # 2. Extract Clash Cards (Famous Leaders / High Demand)
+    # We check for substring matches for major names
+    stars = ["balen", "gagan", "rabi", "oli", "deuba", "kulman", "ck raut"]
     
     for item in raw_data:
-        candidates = item.get('candidates', [])
-        if not candidates or not isinstance(candidates, list):
-            continue
+        cands = item.get('candidates', [])
+        if len(cands) < 1: continue
         
-        # Extract top 2 candidates safely
-        c1 = candidates[0] if len(candidates) > 0 else {}
-        c2 = candidates[1] if len(candidates) > 1 else {}
+        c1 = cands[0]
+        c2 = cands[1] if len(cands) > 1 else {}
         
-        c1_name = c1.get('name', 'N/A')
-        c2_name = c2.get('name', 'N/A')
+        c1_name = str(c1.get('name', '')).lower()
+        c2_name = str(c2.get('name', '')).lower()
         
-        # If any of our "stars" are in this constituency, add to featured
-        if any(f_name.lower() in str(c1_name).lower() or f_name.lower() in str(c2_name).lower() for f_name in featured_names):
+        if any(star in c1_name or star in c2_name for star in stars):
             featured_list.append({
-                "constituency": item.get('name') or item.get('id') or "Unknown Area",
+                "constituency": item.get('name', 'N/A'),
                 "c1": {
-                    "name": c1_name,
+                    "name": c1.get('name', 'N/A'),
                     "party": c1.get('party', 'IND'),
                     "votes": c1.get('votes', 0),
-                    "symbol": party_symbols.get(c1.get('party'), "🚩")
+                    "symbol": party_meta.get(c1.get('party'), party_meta["Independent"])["symbol"]
                 },
                 "c2": {
-                    "name": c2_name,
+                    "name": c2.get('name', 'N/A'),
                     "party": c2.get('party', 'IND'),
                     "votes": c2.get('votes', 0),
-                    "symbol": party_symbols.get(c2.get('party'), "🚩")
+                    "symbol": party_meta.get(c2.get('party'), party_meta["Independent"])["symbol"]
                 }
             })
 
-    # 3. Process Hot Seats (Close Margins)
+    # 3. Detect Hot Seats (Margins < 1500)
     for item in raw_data:
-        candidates = item.get('candidates', [])
-        if len(candidates) >= 2:
+        cands = item.get('candidates', [])
+        if len(cands) >= 2:
             try:
-                v1 = int(candidates[0].get('votes', 0))
-                v2 = int(candidates[1].get('votes', 0))
+                v1 = int(cands[0].get('votes', 0))
+                v2 = int(cands[1].get('votes', 0))
                 margin = abs(v1 - v2)
-                
-                # A margin less than 1000 is a "Hot Seat"
-                if margin < 1000:
+                if margin < 1500:
                     hot_seats_list.append({
                         "area": item.get('name', 'Unknown'),
-                        "candidate": candidates[0].get('name', 'N/A'),
-                        "margin": margin
+                        "leading": cands[0].get('name', 'N/A'),
+                        "margin": margin,
+                        "party": cands[0].get('party', 'IND')
                     })
-            except (ValueError, TypeError):
-                continue
+            except: continue
 
-    # Sort hot seats by smallest margin first
-    hot_seats_list = sorted(hot_seats_list, key=lambda x: x['margin'])
-
-    return parties_list, featured_list[:6], hot_seats_list[:8]
+    return parties_list, featured_list[:6], sorted(hot_seats_list, key=lambda x: x['margin'])[:10]
