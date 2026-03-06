@@ -4,91 +4,93 @@ import requests
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# --- ROBUST NEPAL PARTY CONFIG ---
-# We add every possible variation of the name to prevent "Independent" bug
-PARTY_MAP = {
-    "Rastriya Swatantra Party": ["rsp", "bell", "swatantra party", "घण्टी"],
-    "Nepali Congress": ["nc", "congress", "रुख", "tree"],
-    "CPN (UML)": ["uml", "sun", "सूर्य", "cpn uml"],
-    "CPN (Maoist Centre)": ["maoist", "center", "dahal", "माओवादी"],
-    "Rastriya Prajatantra Party": ["rpp", "plough", "lingden", "हलो"],
-    "Janamat Party": ["janamat", "raut", "horn"],
-    "Nagarik Unmukti Party": ["nup", "dhrishita", "civil liberation"]
+st.set_page_config(page_title="Nepal Election Fix", layout="wide")
+st_autorefresh(interval=20000, key="refresh")
+
+SOURCE_URL = "https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json"
+
+# Robust Mapping
+PARTY_LOOKUP = {
+    "Rastriya Swatantra Party": ["rsp", "bell", "bell", "घण्टी", "swatantra"],
+    "Nepali Congress": ["nc", "congress", "tree", "रुख"],
+    "CPN (UML)": ["uml", "sun", "सूर्य", "cpn-uml"],
+    "CPN (Maoist)": ["maoist", "center", "maobadi", "माओवादी"],
+    "RPP": ["rpp", "plough", "halo", "हलो"]
 }
 
-# The colors and symbols associated with the keys above
-PARTY_DETAILS = {
-    "Rastriya Swatantra Party": {"symbol": "🔔", "color": "#00adef"},
-    "Nepali Congress": {"symbol": "🌳", "color": "#ff0000"},
-    "CPN (UML)": {"symbol": "☀️", "color": "#e21b22"},
-    "CPN (Maoist Centre)": {"symbol": "☭", "color": "#dd0000"},
-    "Rastriya Prajatantra Party": {"symbol": "🚜", "color": "#ffcc00"},
-    "Janamat Party": {"symbol": "📢", "color": "#00ff00"},
-    "Independent": {"symbol": "👤", "color": "#808080"}
-}
+def clean_party(raw_val):
+    if not raw_val: return "Independent"
+    val = str(raw_val).lower()
+    for official, aliases in PARTY_LOOKUP.items():
+        if any(alias in val for alias in aliases):
+            return official
+    return "Independent"
 
-def identify_party(raw_name):
-    """
-    Cleans and matches the party name from JSON to our database.
-    """
-    name = str(raw_name).lower().strip()
-    
-    for official_name, variations in PARTY_MAP.items():
-        if any(v in name for v in variations):
-            return official_name
-    
-    return "Independent" # Default if no keywords match
-
-# --- UPDATED DATA LOADING ---
-@st.cache_data(ttl=10)
-def load_and_fix_data():
+@st.cache_data(ttl=5)
+def fetch_and_debug():
     try:
-        r = requests.get("https://pub-4173e04d0b78426caa8cfa525f827daa.r2.dev/constituencies.json", timeout=10)
+        r = requests.get(SOURCE_URL, timeout=10)
         data = r.json()
+        
         rows = []
-        for const in data:
-            c_name = const.get('name', 'Unknown')
-            for cand in const.get('candidates', []):
-                # IMPORTANT: We identify the party here!
-                party_label = identify_party(cand.get('party', 'Independent'))
-                meta = PARTY_DETAILS.get(party_label, PARTY_DETAILS["Independent"])
+        # We handle both list of dicts and nested dicts
+        for entry in data:
+            # 1. Get Constituency Name
+            c_name = entry.get('name') or entry.get('constituency') or "Unknown"
+            
+            # 2. Find the candidates list (it might be called 'candidates' or something else)
+            candidates = []
+            for key in ['candidates', 'data', 'results', 'list']:
+                if key in entry and isinstance(entry[key], list):
+                    candidates = entry[key]
+                    break
+            
+            # 3. Process each candidate
+            for cand in candidates:
+                # DYNAMICALLY FIND THE PARTY FIELD
+                # We check every key in the candidate object for 'party' or 'group'
+                raw_party = "Independent"
+                for k, v in cand.items():
+                    if 'party' in k.lower() or 'group' in k.lower() or 'symbol' in k.lower():
+                        raw_party = v
+                        break
                 
                 rows.append({
                     "Constituency": c_name,
-                    "Candidate": cand.get('name', 'N/A'),
-                    "Party": party_label,
-                    "Symbol": meta['symbol'],
-                    "Votes": int(cand.get('votes', 0)),
-                    "Color": meta['color']
+                    "Candidate": cand.get('name') or cand.get('candidate_name') or "Unknown",
+                    "Raw_Party": raw_party,
+                    "Party": clean_party(raw_party),
+                    "Votes": int(cand.get('votes') or cand.get('count') or 0)
                 })
-        return pd.DataFrame(rows)
-    except:
-        return pd.DataFrame()
+        return pd.DataFrame(rows), data
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return pd.DataFrame(), None
 
-df = load_and_fix_data()
+df, raw_json = fetch_and_debug()
 
-# --- DISPLAY LOGIC ---
-st.title("🇳🇵 Nepal Election Live (Fixed Party Detection)")
+st.title("🇳🇵 Nepal Election 2026: Live Tally")
 
 if not df.empty:
-    # Party-wise Seat Count (Winner in each constituency)
+    # Seat Count
     winners = df.sort_values(['Constituency', 'Votes'], ascending=[True, False]).drop_duplicates('Constituency')
-    seats = winners['Party'].value_counts().reset_index()
-    seats.columns = ['Party', 'Seats']
-    
-    # Apply Meta to Seat Table
-    seats['Symbol'] = seats['Party'].apply(lambda x: PARTY_DETAILS.get(x, PARTY_DETAILS['Independent'])['symbol'])
-    
-    st.subheader("Live Seat Tally (FPTP)")
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Visualizing with Correct Colors
-        color_map = {p: PARTY_DETAILS.get(p, PARTY_DETAILS['Independent'])['color'] for p in seats['Party']}
-        fig = px.bar(seats, x='Seats', y='Party', orientation='h', color='Party', color_discrete_map=color_map)
-        st.plotly_chart(fig, use_container_width=True)
-        
-    with col2:
-        st.dataframe(seats[['Symbol', 'Party', 'Seats']], hide_index=True)
+    seat_tally = winners['Party'].value_counts().reset_index()
+    seat_tally.columns = ['Party', 'Seats']
+
+    st.header("FPTP Seat Tally")
+    st.bar_chart(data=seat_tally, x='Party', y='Seats')
+    st.table(seat_tally)
+
+    st.header("All Candidate Results")
+    st.dataframe(df, use_container_width=True)
 else:
-    st.error("Could not load data. Check if your JSON URL is public.")
+    st.warning("No data found. Please check the 'Raw JSON Debug' below.")
+
+# --- THE FIXER: DEBUG SECTION ---
+st.divider()
+with st.expander("🛠️ DEBUG: Inspect JSON Structure (Open this if it still shows Independent)"):
+    if raw_json:
+        st.write("The script sees these keys in your first entry:")
+        st.write(list(raw_json[0].keys()) if len(raw_json) > 0 else "Empty List")
+        st.write("Full JSON Preview:")
+        st.json(raw_json[0] if len(raw_json) > 0 else {})
