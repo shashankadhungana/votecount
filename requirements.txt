@@ -1,3 +1,7 @@
 streamlit>=1.30.0
 requests>=2.31.0
 pandas>=2.1.0
+
+Ensure altair is present as it is a common dependency for Streamlit's internal rendering
+
+altair>=5.0.0
